@@ -133,11 +133,20 @@ class DeviceControlStore(
                 HyperRoseAction.DEVICE_CONNECTED -> {
                     bridgeFallbackJob?.cancel()
 
-                    if (_transport.value == ConnectionTransport.DIRECT_RFCOMM &&
-                        _connectionState.value == DeviceConnectionState.CONNECTED
+                    val device = intent.getParcelableExtra(
+                        HyperRoseAction.EXTRA_DEVICE,
+                        android.bluetooth.BluetoothDevice::class.java,
+                    )
+                    val profileId = intent.getStringExtra(HyperRoseAction.EXTRA_PROFILE_ID)
+                    if (profileId != null) {
+                        _capabilities.value =
+                            com.dohex.hyperrose.profile.DeviceProfileRegistry.findById(profileId)?.capabilities
+                                ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
+                    }
+                    // RFCOMM standalone takes priority; don't override with HOOK_BRIDGE if already connected or connecting
+                    if (_transport.value != ConnectionTransport.DIRECT_RFCOMM ||
+                        _connectionState.value == DeviceConnectionState.DISCONNECTED
                     ) {
-                        // Already connected via direct RFCOMM, keep it
-                    } else {
                         if (_transport.value == ConnectionTransport.DIRECT_BLE) {
                             directGattClient.disconnect()
                         }
@@ -145,18 +154,8 @@ class DeviceControlStore(
                         _connectionState.value = DeviceConnectionState.CONNECTED
                     }
 
-                    val device = intent.getParcelableExtra(
-                        HyperRoseAction.EXTRA_DEVICE,
-                        android.bluetooth.BluetoothDevice::class.java,
-                    )
                     _deviceName.value = device?.name ?: _deviceName.value
                             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.displayName
-                    val profileId = intent.getStringExtra(HyperRoseAction.EXTRA_PROFILE_ID)
-                    if (profileId != null) {
-                        _capabilities.value =
-                            com.dohex.hyperrose.profile.DeviceProfileRegistry.findById(profileId)?.capabilities
-                                ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
-                    }
 
                     intent.enumExtra<AncMode>(HyperRoseAction.EXTRA_MODE)
                         ?.let { _ancMode.value = it }
@@ -318,7 +317,9 @@ class DeviceControlStore(
     @SuppressLint("MissingPermission")
     fun connectDirectRfcomm(address: String) {
         if (!_hasBluetoothPermission.value) return
-        if (_connectionState.value == DeviceConnectionState.CONNECTED) return
+        if (_connectionState.value == DeviceConnectionState.CONNECTED &&
+            _transport.value == ConnectionTransport.DIRECT_RFCOMM
+        ) return
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
         val bonded = adapter.bondedDevices.firstOrNull { it.address == address } ?: return
         val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
@@ -522,21 +523,68 @@ class DeviceControlStore(
 
         directGattClient.battery.onEach {
             _battery.value = it?.withLastKnownCaseBattery(_battery.value)
+            if (it != null) broadcastToSystem(HyperRoseAction.BATTERY_CHANGED) {
+                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, it.left?.level ?: -1)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, it.right?.level ?: -1)
+                putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+            }
         }.launchIn(scope)
 
-        directGattClient.ancMode.onEach { if (it != null) _ancMode.value = it }.launchIn(scope)
+        directGattClient.ancMode.onEach {
+            if (it != null) {
+                _ancMode.value = it
+                broadcastToSystem(HyperRoseAction.ANC_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_MODE, it.name)
+                }
+            }
+        }.launchIn(scope)
 
-        directGattClient.ancDepth.onEach { if (it != null) _ancDepth.value = it }.launchIn(scope)
+        directGattClient.ancDepth.onEach {
+            if (it != null) {
+                _ancDepth.value = it
+                broadcastToSystem(HyperRoseAction.ANC_DEPTH_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_DEPTH, it.name)
+                }
+            }
+        }.launchIn(scope)
 
-        directGattClient.transLevel.onEach { if (it != null) _transLevel.value = it }
-            .launchIn(scope)
+        directGattClient.transLevel.onEach {
+            if (it != null) {
+                _transLevel.value = it
+                broadcastToSystem(HyperRoseAction.TRANS_LEVEL_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_LEVEL, it.name)
+                }
+            }
+        }.launchIn(scope)
 
-        directGattClient.eqMode.onEach { if (it != null) _eqMode.value = it }.launchIn(scope)
+        directGattClient.eqMode.onEach {
+            if (it != null) {
+                _eqMode.value = it
+                broadcastToSystem(HyperRoseAction.EQ_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_MODE, it.name)
+                }
+            }
+        }.launchIn(scope)
 
-        directGattClient.gameMode.onEach { if (it != null) _gameMode.value = it }.launchIn(scope)
+        directGattClient.gameMode.onEach {
+            if (it != null) {
+                _gameMode.value = it
+                broadcastToSystem(HyperRoseAction.GAME_MODE_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_ENABLED, it)
+                }
+            }
+        }.launchIn(scope)
 
-        directGattClient.lowLatency.onEach { if (it != null) _lowLatency.value = it }
-            .launchIn(scope)
+        directGattClient.lowLatency.onEach {
+            if (it != null) {
+                _lowLatency.value = it
+                broadcastToSystem(HyperRoseAction.LOW_LATENCY_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_ENABLED, it)
+                }
+            }
+        }.launchIn(scope)
     }
 
     private fun observeDirectRfcomm(client: StandaloneRfcommClient) {
@@ -550,10 +598,12 @@ class DeviceControlStore(
                 }
 
                 StandaloneRfcommClient.ConnectionState.CONNECTING -> {
+                    _transport.value = ConnectionTransport.DIRECT_RFCOMM
                     _connectionState.value = DeviceConnectionState.CONNECTING
                 }
 
                 StandaloneRfcommClient.ConnectionState.CONNECTED -> {
+                    _transport.value = ConnectionTransport.DIRECT_RFCOMM
                     _connectionState.value = DeviceConnectionState.CONNECTED
                 }
             }
@@ -565,14 +615,78 @@ class DeviceControlStore(
 
         client.battery.onEach {
             _battery.value = it?.withLastKnownCaseBattery(_battery.value)
+            if (it != null) broadcastToSystem(HyperRoseAction.BATTERY_CHANGED) {
+                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, it.left?.level ?: -1)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, it.right?.level ?: -1)
+                putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+            }
         }.launchIn(scope)
 
-        client.ancMode.onEach { if (it != null) _ancMode.value = it }.launchIn(scope)
-        client.ancDepth.onEach { if (it != null) _ancDepth.value = it }.launchIn(scope)
-        client.transLevel.onEach { if (it != null) _transLevel.value = it }.launchIn(scope)
-        client.eqMode.onEach { if (it != null) _eqMode.value = it }.launchIn(scope)
-        client.gameMode.onEach { if (it != null) _gameMode.value = it }.launchIn(scope)
-        client.lowLatency.onEach { if (it != null) _lowLatency.value = it }.launchIn(scope)
+        client.ancMode.onEach {
+            if (it != null) {
+                _ancMode.value = it
+                broadcastToSystem(HyperRoseAction.ANC_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_MODE, it.name)
+                }
+            }
+        }.launchIn(scope)
+        client.ancDepth.onEach {
+            if (it != null) {
+                _ancDepth.value = it
+                broadcastToSystem(HyperRoseAction.ANC_DEPTH_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_DEPTH, it.name)
+                }
+            }
+        }.launchIn(scope)
+        client.transLevel.onEach {
+            if (it != null) {
+                _transLevel.value = it
+                broadcastToSystem(HyperRoseAction.TRANS_LEVEL_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_LEVEL, it.name)
+                }
+            }
+        }.launchIn(scope)
+        client.eqMode.onEach {
+            if (it != null) {
+                _eqMode.value = it
+                broadcastToSystem(HyperRoseAction.EQ_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_MODE, it.name)
+                }
+            }
+        }.launchIn(scope)
+        client.gameMode.onEach {
+            if (it != null) {
+                _gameMode.value = it
+                broadcastToSystem(HyperRoseAction.GAME_MODE_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_ENABLED, it)
+                }
+            }
+        }.launchIn(scope)
+        client.lowLatency.onEach {
+            if (it != null) {
+                _lowLatency.value = it
+                broadcastToSystem(HyperRoseAction.LOW_LATENCY_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_ENABLED, it)
+                }
+            }
+        }.launchIn(scope)
+    }
+
+    private fun broadcastToSystem(action: String, extras: Intent.() -> Unit) {
+        listOf(
+            HyperRoseAction.PACKAGE_MILINK,
+            HyperRoseAction.PACKAGE_MI_BLUETOOTH,
+        ).forEach { pkg ->
+            appContext.sendBroadcast(
+                Intent(action).apply {
+                    setPackage(pkg)
+                    addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                    extras()
+                },
+            )
+        }
     }
 
     private fun registerBridgeReceiver() {

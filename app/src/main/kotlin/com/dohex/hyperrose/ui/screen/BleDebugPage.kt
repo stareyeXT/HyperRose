@@ -185,7 +185,7 @@ fun BleDebugPage(
                         }
                     }
                 }
-                items(bleEntries, key = { "${it.time}_${bleEntries.indexOf(it)}" }) { entry ->
+                items(bleEntries, key = { it.time }) { entry ->
                     BleLogCard(entry = entry, onCopy = {
                         clipboardManager.setText(AnnotatedString(entry.data))
                     })

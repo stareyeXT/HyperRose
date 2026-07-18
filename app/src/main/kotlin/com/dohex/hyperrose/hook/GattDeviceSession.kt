@@ -24,6 +24,8 @@ class GattDeviceSession(
     profile: DeviceProfile,
 ) : DeviceSession(context, module, profile) {
 
+    override val isConnected: Boolean get() = gatt != null && writeChar != null
+
     private var gatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
 

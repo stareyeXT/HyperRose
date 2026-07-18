@@ -142,16 +142,24 @@ object BluetoothProcessHook {
 
         registerCommandReceiverIfNeeded(module, context)
 
-        // 启动 GATT 通信
+        // 启动传输通信
         // 根据 TransportSpec 选择对应的传输实现
         session?.disconnect()
-        session = when (profile.transport) {
+        val newSession = when (profile.transport) {
             is com.dohex.hyperrose.profile.TransportSpec.Gatt ->
                 GattDeviceSession(context, module, profile)
 
             is com.dohex.hyperrose.profile.TransportSpec.Rfcomm ->
                 RfcommDeviceSession(context, module, profile)
-        }.also { it.connect(device) }
+        }
+        // Set session immediately so commands can be queued during async connect
+        session = newSession
+        newSession.connect(device)
+
+        // RfcommDeviceSession.connect() runs async; broadcastDeviceConnected() will send
+        // DEVICE_CONNECTED once RFCOMM is established.
+        // For Gatt sessions, connect() is also async (connectGatt).
+        // The broadcast with initial state is handled inside each session's connect flow.
 
         // 广播连接事件（给 App、MiBluetooth、MiLink、蓝牙进程 binder hook）
         listOf(
@@ -252,6 +260,14 @@ object BluetoothProcessHook {
                             Log.WARN,
                             TAG,
                             "!!! CommandReceiver: session is NULL, dropping ${intent.action}"
+                        )
+                        return
+                    }
+                    if (!manager.isConnected) {
+                        module.log(
+                            Log.WARN,
+                            TAG,
+                            "!!! CommandReceiver: session not connected, dropping ${intent.action}"
                         )
                         return
                     }

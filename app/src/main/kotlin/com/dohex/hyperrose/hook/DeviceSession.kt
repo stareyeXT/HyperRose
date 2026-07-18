@@ -48,6 +48,7 @@ abstract class DeviceSession(
     abstract fun connect(device: BluetoothDevice)
     abstract fun disconnect()
     abstract fun sendCommand(packet: ByteArray, description: String = "")
+    abstract val isConnected: Boolean
 
     fun refreshStatus() {
         queryAllStatus()
@@ -150,6 +151,8 @@ abstract class DeviceSession(
         }
     }
 
+    private var pollScheduled = false
+
     protected fun queryAllStatus() {
         profile.protocol.statusQuerySequence.forEachIndexed { index, query ->
             handler.postDelayed(
@@ -157,18 +160,21 @@ abstract class DeviceSession(
                 (profile.gattTiming?.statusQueryStepDelayMs ?: 100L) * index,
             )
         }
-        handler.postDelayed(
-            object : Runnable {
-                override fun run() {
-                    sendCommand(profile.protocol.queryBattery, "Query battery")
-                    handler.postDelayed(
-                        this,
-                        profile.gattTiming?.statusRefreshIntervalMs ?: 30_000L
-                    )
-                }
-            },
-            profile.gattTiming?.statusRefreshIntervalMs ?: 30_000L,
-        )
+        if (!pollScheduled) {
+            pollScheduled = true
+            handler.postDelayed(
+                object : Runnable {
+                    override fun run() {
+                        sendCommand(profile.protocol.queryBattery, "Query battery")
+                        handler.postDelayed(
+                            this,
+                            profile.gattTiming?.statusRefreshIntervalMs ?: 30_000L
+                        )
+                    }
+                },
+                profile.gattTiming?.statusRefreshIntervalMs ?: 30_000L,
+            )
+        }
     }
 
     protected fun broadcastState(action: String, extras: Intent.() -> Unit) {

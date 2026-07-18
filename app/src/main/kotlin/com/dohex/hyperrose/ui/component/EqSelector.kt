@@ -1,6 +1,7 @@
 package com.dohex.hyperrose.ui.component
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import com.dohex.hyperrose.model.EqPreset
 import top.yukonga.miuix.kmp.basic.Card
@@ -14,8 +15,8 @@ fun EqSelector(
     presets: List<EqPreset> = EqPreset.entries.toList(),
     modifier: Modifier = Modifier,
 ) {
-    val options = presets.map { it.label }
-    val selectedIndex = presets.indexOf(eqMode).coerceAtLeast(0)
+    val options = remember(presets) { presets.map { it.label } }
+    val selectedIndex = remember(presets, eqMode) { presets.indexOf(eqMode).coerceAtLeast(0) }
 
     Card(modifier = modifier) {
         OverlayDropdownPreference(

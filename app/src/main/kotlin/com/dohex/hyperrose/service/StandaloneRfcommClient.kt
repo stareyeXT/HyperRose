@@ -79,6 +79,7 @@ class StandaloneRfcommClient(
     // Internal state
     private var dataSocket: BluetoothSocket? = null
     private var readerThread: Thread? = null
+    private val pendingCommands = java.util.concurrent.ConcurrentLinkedQueue<Pair<ByteArray, String>>()
 
     @Volatile
     private var running = false
@@ -107,10 +108,12 @@ class StandaloneRfcommClient(
                     _connectionState.value = ConnectionState.CONNECTED
                     Log.i(TAG, "RFCOMM connected")
                     startReader()
+                    flushPendingCommands()
                     queryAllStatus()
                 }
             } catch (e: IOException) {
                 Log.e(TAG, "RFCOMM connect failed", e)
+                pendingCommands.clear()
                 handler.post {
                     _connectionState.value = ConnectionState.DISCONNECTED
                 }
@@ -142,14 +145,36 @@ class StandaloneRfcommClient(
     }
 
     fun sendCommand(packet: ByteArray, description: String = "") {
+        val socket = dataSocket
+        if (socket != null) {
+            writeToSocket(socket, packet, description)
+        } else {
+            pendingCommands.add(packet to description)
+            Log.d(TAG, "Queued command (dataSocket null): $description")
+        }
+    }
+
+    private fun writeToSocket(socket: BluetoothSocket, packet: ByteArray, description: String) {
         try {
-            dataSocket?.outputStream?.write(packet)
-            val hex = packet.toHexString()
-            Log.d(TAG, "→ $hex")
-            BleLog.log("App", "TX", hex, description, logTimeFormat.format(Date()))
+            socket.outputStream.write(packet)
+            if (isBleLogEnabled()) {
+                val hex = packet.toHexString()
+                BleLog.log("App", "TX", hex, description, logTimeFormat.format(Date()))
+            }
         } catch (e: IOException) {
             Log.e(TAG, "RFCOMM send failed", e)
         }
+    }
+
+    private fun flushPendingCommands() {
+        val socket = dataSocket ?: return
+        var count = 0
+        while (true) {
+            val cmd = pendingCommands.poll() ?: break
+            writeToSocket(socket, cmd.first, cmd.second)
+            count++
+        }
+        if (count > 0) Log.d(TAG, "Flushed $count pending commands")
     }
 
     override fun refreshStatus() {
@@ -203,30 +228,37 @@ class StandaloneRfcommClient(
         running = true
         readerThread = Thread {
             val buf = ByteArray(512)
+            val frameBuf = ByteArray(2048)
+            var frameLen = 0
             val input = dataSocket!!.inputStream
-            var frameBuf = ByteArray(0)
 
             while (running) {
                 try {
                     val n = input.read(buf)
                     if (n < 0) break
-                    frameBuf += buf.copyOf(n)
+                    if (frameLen + n > frameBuf.size) frameLen = 0
+                    System.arraycopy(buf, 0, frameBuf, frameLen, n)
+                    frameLen += n
 
-                    while (frameBuf.size >= 5) {
-                        val aaIdx = frameBuf.indexOf(0xAA.toByte())
-                        if (aaIdx < 4) {
-                            if (aaIdx == -1) break
-                            frameBuf = frameBuf.copyOfRange(aaIdx + 1, frameBuf.size)
+                    var processed = 0
+                    while (frameLen - processed >= 5) {
+                        val aaIdx = frameBuf.indexOf(0xAA.toByte(), processed)
+                        if (aaIdx < processed + 4) {
+                            processed = if (aaIdx == -1) frameLen else aaIdx + 1
                             continue
                         }
                         val frameEnd = aaIdx + 1
-                        val frame = frameBuf.copyOfRange(0, frameEnd)
+                        val frame = frameBuf.copyOfRange(processed, frameEnd)
                         if (verifyChecksum(frame)) {
                             handler.post { handleResponse(frame) }
-                            frameBuf = frameBuf.copyOfRange(frameEnd, frameBuf.size)
+                            processed = frameEnd
                         } else {
-                            frameBuf = frameBuf.copyOfRange(1, frameBuf.size)
+                            processed++
                         }
+                    }
+                    if (processed > 0) {
+                        frameLen -= processed
+                        System.arraycopy(frameBuf, processed, frameBuf, 0, frameLen)
                     }
                 } catch (e: IOException) {
                     if (running) Log.e(TAG, "RFCOMM read error", e)
@@ -249,71 +281,82 @@ class StandaloneRfcommClient(
         if (frame.size < 4) return false
         if (!profile.hasFrameChecksum) return frame[frame.size - 1] == 0xAA.toByte()
         val ckPos = frame.size - 2
-        val expectedCk = (frame.copyOfRange(0, ckPos).sum() and 0xFF).toByte()
-        return frame[ckPos] == expectedCk
+        var sum = 0
+        for (i in 0 until ckPos) {
+            sum = (sum + (frame[i].toInt() and 0xFF)) and 0xFF
+        }
+        return frame[ckPos] == sum.toByte()
+    }
+
+    private fun ByteArray.indexOf(element: Byte, start: Int): Int {
+        for (i in start until this.size) {
+            if (this[i] == element) return i
+        }
+        return -1
     }
 
     // ==================== Response handling ====================
 
     private fun handleResponse(data: ByteArray) {
-        val hex = data.toHexString()
         val results = profile.protocol.parseResponse(data)
-        BleLog.log("App", "RX", hex, results.toString(), logTimeFormat.format(Date()))
+        if (isBleLogEnabled()) {
+            val hex = data.toHexString()
+            BleLog.log("App", "RX", hex, results.toString(), logTimeFormat.format(Date()))
+        }
         for (result in results) {
             when (result) {
                 is DeviceResponse.Battery -> {
-                    Log.d(TAG, "← $hex → $result")
                     _battery.value = result.info.withLastKnownCaseBattery(_battery.value)
                 }
 
                 is DeviceResponse.Anc -> {
-                    Log.d(TAG, "← $hex → $result")
                     _ancMode.value = result.mode
                 }
 
                 is DeviceResponse.AncDepthChanged -> {
-                    Log.d(TAG, "← $hex → $result")
                     _ancDepth.value = result.depth
                 }
 
                 is DeviceResponse.TransparencyChanged -> {
-                    Log.d(TAG, "← $hex → $result")
                     _transLevel.value = result.level
                 }
 
                 is DeviceResponse.Eq -> {
-                    Log.d(TAG, "← $hex → $result")
                     _eqMode.value = result.mode
                 }
 
                 is DeviceResponse.GameMode -> {
-                    Log.d(TAG, "← $hex → $result")
                     _gameMode.value = result.enabled
                 }
 
                 is DeviceResponse.LowLatencyChanged -> {
-                    Log.d(TAG, "← $hex → $result")
                     _lowLatency.value = result.enabled
                 }
 
-                is DeviceResponse.Unknown -> {
-                    Log.d(TAG, "← $hex → Unknown")
-                }
+                is DeviceResponse.Unknown -> {}
             }
         }
     }
 
+    private fun isBleLogEnabled(): Boolean = com.dohex.hyperrose.hook.BluetoothProcessHook.isBleLogEnabled()
+
     // ==================== Status polling ====================
+
+    private var pollScheduled = false
 
     private fun queryAllStatus() {
         profile.protocol.statusQuerySequence.forEachIndexed { index, query ->
             handler.postDelayed({ sendCommand(query, "Query status") }, 120L * index)
         }
-        handler.postDelayed(object : Runnable {
-            override fun run() {
-                queryAllStatus()
-            }
-        }, 30_000L)
+        if (!pollScheduled) {
+            pollScheduled = true
+            handler.postDelayed(object : Runnable {
+                override fun run() {
+                    sendCommand(profile.protocol.queryBattery, "Query battery")
+                    handler.postDelayed(this, 30_000L)
+                }
+            }, 30_000L)
+        }
     }
 }
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,8 +64,8 @@ fun AncSelector(
         }
 
         if (showAncDepth && ancMode == AncMode.NOISE_CANCEL && ancDepth != null) {
-            val depthOptions = AncDepth.entries.map { it.label }
-            val depthSelectedIndex = AncDepth.entries.indexOf(ancDepth)
+            val depthOptions = remember { AncDepth.entries.map { it.label } }
+            val depthSelectedIndex = remember(ancDepth) { AncDepth.entries.indexOf(ancDepth) }
 
             TabRowWithContour(
                 tabs = depthOptions,
@@ -81,8 +82,8 @@ fun AncSelector(
         }
 
         if (showTransLevel && ancMode == AncMode.TRANSPARENT && transLevel != null) {
-            val transOptions = TransparencyLevel.entries.map { it.label }
-            val transSelectedIndex = TransparencyLevel.entries.indexOf(transLevel)
+            val transOptions = remember { TransparencyLevel.entries.map { it.label } }
+            val transSelectedIndex = remember(transLevel) { TransparencyLevel.entries.indexOf(transLevel) }
 
             TabRowWithContour(
                 tabs = transOptions,

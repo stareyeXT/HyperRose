@@ -89,9 +89,9 @@ fun PopupControlPanel(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (capabilities.supportedEqPresets.isNotEmpty()) {
-                        val eqOptions = capabilities.supportedEqPresets.toList()
-                        val eqItems = eqOptions.map { it.label }
-                        val eqSelectedIndex = eqOptions.indexOf(eqMode).coerceAtLeast(0)
+                        val eqOptions = remember(capabilities) { capabilities.supportedEqPresets.toList() }
+                        val eqItems = remember(eqOptions) { eqOptions.map { it.label } }
+                        val eqSelectedIndex = remember(eqOptions, eqMode) { eqOptions.indexOf(eqMode).coerceAtLeast(0) }
                         Card {
                             WindowDropdownPreference(
                                 title = "音色",
@@ -147,9 +147,9 @@ fun PopupControlPanel(
                         showTransLevel = capabilities.supportedTransLevels.isNotEmpty(),
                     )
                     if (capabilities.supportedEqPresets.isNotEmpty()) {
-                        val eqOptions = capabilities.supportedEqPresets.toList()
-                        val eqItems = eqOptions.map { it.label }
-                        val eqSelectedIndex = eqOptions.indexOf(eqMode).coerceAtLeast(0)
+                        val eqOptions = remember(capabilities) { capabilities.supportedEqPresets.toList() }
+                        val eqItems = remember(eqOptions) { eqOptions.map { it.label } }
+                        val eqSelectedIndex = remember(eqOptions, eqMode) { eqOptions.indexOf(eqMode).coerceAtLeast(0) }
                         Card {
                             WindowDropdownPreference(
                                 title = "音色",
