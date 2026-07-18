@@ -31,6 +31,11 @@ object BluetoothProcessHook {
     /** 同进程内直接访问当前 GATT 客户端（供 HeadsetServiceBinderHook 使用） */
     internal fun currentSession(): DeviceSession? = session
 
+    /** address → EarphoneColor.name 缓存 */
+    private val deviceColorMap = mutableMapOf<String, String>()
+
+    internal fun getDeviceColor(address: String?): String? = address?.let { deviceColorMap[it] }
+
     private var commandReceiverRegistered = false
 
     @SuppressLint("PrivateApi")
@@ -274,6 +279,7 @@ object BluetoothProcessHook {
                 addAction(HyperRoseAction.BLE_LOG_DISCONNECT)
                 addAction(HyperRoseAction.BLE_LOG_CLEAR)
                 addAction(HyperRoseAction.RAW_SEND)
+                addAction(HyperRoseAction.DEVICE_COLOR_CHANGED)
             }
 
         val receiver =
@@ -295,6 +301,43 @@ object BluetoothProcessHook {
                         }
 
                         HyperRoseAction.BLE_LOG_CLEAR -> { /* app-side only */ return
+                        }
+
+                        HyperRoseAction.DEVICE_COLOR_CHANGED -> {
+                            val address = intent.getStringExtra(HyperRoseAction.EXTRA_DEVICE_ADDRESS)
+                            val colorName = intent.getStringExtra(HyperRoseAction.EXTRA_COLOR)
+                            if (address != null && colorName != null) {
+                                deviceColorMap[address] = colorName
+                            }
+                            // 颜色变化 → 立即重发 SHOW_ISLAND，让岛更新耳机图
+                            val s = session
+                            if (s != null && address != null && s.connectedAddress == address) {
+                                val battery = s.currentBattery
+                                val device = s.connectedDevice
+                                if (battery != null && device != null) {
+                                    val isMono = battery.right == null && battery.caseBattery == null
+                                    val resolvedColor = deviceColorMap[address]
+                                    val leftImage = s.resolveImageName(s.profile.id, resolvedColor, isMono, true)
+                                    val rightImage = if (isMono) null else s.resolveImageName(s.profile.id, resolvedColor, isMono, false)
+                                    context.sendBroadcast(
+                                        Intent(HyperRoseAction.SHOW_ISLAND).apply {
+                                            setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
+                                            addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                                            putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, if (isMono) -1 else (battery.left?.level ?: -1))
+                                            putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, if (isMono) -1 else (battery.right?.level ?: -1))
+                                            putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
+                                            putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, battery.left?.isCharging ?: false)
+                                            putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, battery.right?.isCharging ?: false)
+                                            putExtra(HyperRoseAction.EXTRA_DEVICE, device)
+                                            putExtra(HyperRoseAction.EXTRA_PROFILE_ID, s.profile.id)
+                                            putExtra(HyperRoseAction.EXTRA_COLOR, resolvedColor)
+                                            putExtra(HyperRoseAction.EXTRA_LEFT_IMAGE, leftImage)
+                                            putExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE, rightImage)
+                                        },
+                                    )
+                                }
+                            }
+                            return
                         }
                     }
 

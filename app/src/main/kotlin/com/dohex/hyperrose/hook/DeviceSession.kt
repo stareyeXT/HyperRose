@@ -30,7 +30,7 @@ abstract class DeviceSession(
     protected val module: XposedModule,
     val profile: DeviceProfile,
 ) {
-    protected var connectedDevice: BluetoothDevice? = null
+    internal var connectedDevice: BluetoothDevice? = null
     val connectedAddress: String? get() = connectedDevice?.address
     val connectedName: String? get() = connectedDevice?.name
     protected val handler = Handler(Looper.getMainLooper())
@@ -98,6 +98,12 @@ abstract class DeviceSession(
                             putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
                             putExtra(HyperRoseAction.EXTRA_DEVICE, connectedDevice)
                             putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)
+                            val colorName = BluetoothProcessHook.getDeviceColor(connectedAddress)
+                            putExtra(HyperRoseAction.EXTRA_COLOR, colorName)
+                            val leftImage = resolveImageName(profile.id, colorName, isMono, leftSide = true)
+                            putExtra(HyperRoseAction.EXTRA_LEFT_IMAGE, leftImage)
+                            val rightImage = if (isMono) null else resolveImageName(profile.id, colorName, isMono, leftSide = false)
+                            putExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE, rightImage)
                         },
                     )
                 }
@@ -288,4 +294,32 @@ abstract class DeviceSession(
     }
 
     protected fun ByteArray.toHexString(): String = joinToString(" ") { "%02X".format(it) }
+
+    internal fun resolveImageName(
+        profileId: String,
+        colorName: String?,
+        isMono: Boolean,
+        leftSide: Boolean,
+    ): String? {
+        val color = (colorName ?: defaultColorFor(profileId)).lowercase()
+        return when (profileId) {
+            "rose-cambrian" -> when (color) {
+                "gray" -> "earphone_i5_gray_${if (leftSide) "left" else "right"}"
+                "black" -> "earphone_mk2_black_${if (leftSide) "left" else "right"}"
+                else -> "earphone_cambrian_blue"
+            }
+            "rose-earfree-i5" ->
+                "earphone_i5_${color}_${if (leftSide) "left" else "right"}"
+            "rose-budsfeel-mk2" ->
+                "earphone_mk2_${color}_${if (leftSide) "left" else "right"}"
+            else -> null
+        }
+    }
+
+    internal fun defaultColorFor(profileId: String): String = when (profileId) {
+        "rose-earfree-i5" -> "GRAY"
+        "rose-budsfeel-mk2" -> "BLACK"
+        "rose-cambrian" -> "BLUE"
+        else -> "GRAY"
+    }
 }

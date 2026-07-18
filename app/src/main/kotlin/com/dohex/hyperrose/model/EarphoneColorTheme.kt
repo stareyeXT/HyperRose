@@ -76,15 +76,15 @@ enum class DeviceColorProfile(
     CAMBRIAN(
         "rose-cambrian",
         mapOf(
+            EarphoneColor.BLUE to DeviceColorImages(
+                R.drawable.earphone_cambrian_blue,
+                R.drawable.earphone_cambrian_blue,
+                R.drawable.earphone_cambrian_blue,
+            ),
             EarphoneColor.GRAY to DeviceColorImages(
                 R.drawable.earphone_i5_gray_case,
                 R.drawable.earphone_i5_gray_left,
                 R.drawable.earphone_i5_gray_right,
-            ),
-            EarphoneColor.BLUE to DeviceColorImages(
-                R.drawable.earphone_i5_blue_case,
-                R.drawable.earphone_i5_blue_left,
-                R.drawable.earphone_i5_blue_right,
             ),
             EarphoneColor.BLACK to DeviceColorImages(
                 R.drawable.earphone_mk2_black_case,

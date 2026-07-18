@@ -1,6 +1,7 @@
 package com.dohex.hyperrose.data
 
 import android.content.Context
+import android.content.Intent
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import com.dohex.hyperrose.ipc.HyperRoseIpc as HyperRoseAction
 import java.io.IOException
 
 val LocalDeviceImageStore = staticCompositionLocalOf<DeviceImageStore> {
@@ -81,6 +83,22 @@ class DeviceImageStore(context: Context) {
     suspend fun setColorTheme(address: String, theme: DeviceColorTheme) {
         appContext.deviceImageDataStore.edit { prefs ->
             prefs[colorKey(address)] = theme.color.name
+        }
+        listOf(
+            HyperRoseAction.PACKAGE_BLUETOOTH,
+            HyperRoseAction.PACKAGE_MI_BLUETOOTH,
+            HyperRoseAction.PACKAGE_APP,
+        ).forEach { pkg ->
+            runCatching {
+                appContext.sendBroadcast(
+                    Intent(HyperRoseAction.DEVICE_COLOR_CHANGED).apply {
+                        putExtra(HyperRoseAction.EXTRA_DEVICE_ADDRESS, address)
+                        putExtra(HyperRoseAction.EXTRA_COLOR, theme.color.name)
+                        setPackage(pkg)
+                        addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                    },
+                )
+            }
         }
     }
 }

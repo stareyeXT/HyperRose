@@ -66,8 +66,16 @@ class DeviceControlStore(
 
     private var bridgeFallbackJob: Job? = null
 
+    // Direct-connect retry state
+    private var directRetryDevice: android.bluetooth.BluetoothDevice? = null
+    private var directRetryProfile: com.dohex.hyperrose.profile.DeviceProfile? = null
+    private var directRetryCount = 0
+    private var directRetryJob: Job? = null
+
     companion object {
         private const val BRIDGE_TIMEOUT_MS = 5_000L
+        private const val DIRECT_MAX_RETRIES = 3
+        private const val DIRECT_RETRY_DELAY_MS = 1_500L
     }
 
     private val _hasBluetoothPermission = MutableStateFlow(false)
@@ -84,6 +92,8 @@ class DeviceControlStore(
 
     private val _deviceName = MutableStateFlow<String?>(null)
     val deviceName: StateFlow<String?> = _deviceName.asStateFlow()
+    private val _connectedDevice = MutableStateFlow<android.bluetooth.BluetoothDevice?>(null)
+    private var connectedProfileId: String? = null
 
     private val _battery = MutableStateFlow<TwsBatteryState?>(null)
     val battery: StateFlow<TwsBatteryState?> = _battery.asStateFlow()
@@ -143,15 +153,26 @@ class DeviceControlStore(
                             com.dohex.hyperrose.profile.DeviceProfileRegistry.findById(profileId)?.capabilities
                                 ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
                     }
-                    // RFCOMM standalone takes priority; don't override with HOOK_BRIDGE if already connected or connecting
-                    if (_transport.value != ConnectionTransport.DIRECT_RFCOMM ||
-                        _connectionState.value == DeviceConnectionState.DISCONNECTED
-                    ) {
-                        if (_transport.value == ConnectionTransport.DIRECT_BLE) {
-                            directGattClient.disconnect()
-                        }
+
+                    val directActive = _transport.value == ConnectionTransport.DIRECT_RFCOMM ||
+                        _transport.value == ConnectionTransport.DIRECT_BLE
+                    val directPending = directRetryDevice != null
+                    // 优先 App 直连：hook 报告已连接时，若尚未直连/正在直连，则先发起直连；
+                    // 直连失败会自动重试，重试用尽后回退到桥接。
+                    if (!directActive && !directPending && device != null) {
+                        val profile = profileId?.let {
+                            com.dohex.hyperrose.profile.DeviceProfileRegistry.findById(it)
+                        } ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(device.name ?: "")
+                        _connectedDevice.value = device
+                        connectedProfileId = profile?.id
+                        _connectionState.value = DeviceConnectionState.CONNECTING
+                        attemptDirectConnect(device, profile)
+                    } else if (!directActive && !directPending) {
+                        // 无法直连（缺少设备信息），回退桥接
                         _transport.value = ConnectionTransport.HOOK_BRIDGE
                         _connectionState.value = DeviceConnectionState.CONNECTED
+                        _connectedDevice.value = null
+                        connectedProfileId = null
                     }
 
                     _deviceName.value = device?.name ?: _deviceName.value
@@ -217,12 +238,18 @@ class DeviceControlStore(
                     }
                 }
 
-                HyperRoseAction.LOW_LATENCY_CHANGED -> {
-                    if (intent.hasExtra(HyperRoseAction.EXTRA_ENABLED)) {
-                        _lowLatency.value =
-                            intent.getBooleanExtra(HyperRoseAction.EXTRA_ENABLED, false)
+                HyperRoseAction.DEVICE_COLOR_CHANGED -> {
+                    val colorName = intent.getStringExtra(HyperRoseAction.EXTRA_COLOR)
+                    if (_transport.value == ConnectionTransport.DIRECT_RFCOMM ||
+                        _transport.value == ConnectionTransport.DIRECT_BLE
+                    ) {
+                        val battery = _battery.value
+                        if (battery != null && colorName != null) {
+                            broadcastFocusIslandWithColor(battery, colorName)
+                        }
                     }
                 }
+
             }
         }
     }
@@ -244,10 +271,17 @@ class DeviceControlStore(
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
         val preferred = adapter.bondedDevices.firstOrNull { device ->
             val name = device.name ?: return@firstOrNull false
-            val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) ?: return@firstOrNull false
-            profile.transport is TransportSpec.Rfcomm
+            com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) != null
         } ?: return
-        connectDirectRfcomm(preferred.address)
+        val profile =
+            com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(preferred.name ?: "")
+        _deviceName.value = preferred.name ?: preferred.address
+        _connectedDevice.value = preferred
+        connectedProfileId = profile?.id
+        _capabilities.value = profile?.capabilities
+            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
+        com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, preferred.address)
+        attemptDirectConnect(preferred, profile)
     }
 
     fun refreshPermissionState() {
@@ -295,23 +329,11 @@ class DeviceControlStore(
         com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, address)
         val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
         _deviceName.value = bonded.name ?: address
+        _connectedDevice.value = bonded
+        connectedProfileId = profile?.id
         _capabilities.value = profile?.capabilities
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
-        bridgeFallbackJob?.cancel()
-        if (profile?.transport is TransportSpec.Rfcomm) {
-            connectStandalone(bonded, profile)
-        } else {
-            _transport.value = ConnectionTransport.HOOK_BRIDGE
-            _connectionState.value = DeviceConnectionState.CONNECTING
-            bridgeFallbackJob = scope.launch {
-                delay(5_000L)
-                if (_transport.value == ConnectionTransport.HOOK_BRIDGE &&
-                    _connectionState.value == DeviceConnectionState.CONNECTING
-                ) {
-                    connectStandalone(bonded, profile)
-                }
-            }
-        }
+        attemptDirectConnect(bonded, profile)
     }
 
     @SuppressLint("MissingPermission")
@@ -324,10 +346,64 @@ class DeviceControlStore(
         val bonded = adapter.bondedDevices.firstOrNull { it.address == address } ?: return
         val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
         _deviceName.value = bonded.name ?: address
+        _connectedDevice.value = bonded
+        connectedProfileId = profile?.id
         _capabilities.value = profile?.capabilities
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
         com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, address)
+        attemptDirectConnect(bonded, profile)
+    }
+
+    /**
+     * 优先尝试 App 直连（RFCOMM/BLE）。失败会自动重试若干次，
+     * 全部失败后回退到 LSPosed 桥接模式。
+     */
+    @SuppressLint("MissingPermission")
+    private fun attemptDirectConnect(
+        bonded: android.bluetooth.BluetoothDevice,
+        profile: com.dohex.hyperrose.profile.DeviceProfile?,
+    ) {
+        bridgeFallbackJob?.cancel()
+        directRetryJob?.cancel()
+        directRetryDevice = bonded
+        directRetryProfile = profile
+        directRetryCount = 0
         connectStandalone(bonded, profile)
+    }
+
+    /** 直连失败时调用：未超上限则重试，超限则回退桥接。返回 true 表示已处理（重试或回退）。 */
+    @SuppressLint("MissingPermission")
+    private fun onDirectConnectFailed(): Boolean {
+        val device = directRetryDevice ?: return false
+        val profile = directRetryProfile
+        if (directRetryCount < DIRECT_MAX_RETRIES) {
+            directRetryCount++
+            directRetryJob?.cancel()
+            directRetryJob = scope.launch {
+                delay(DIRECT_RETRY_DELAY_MS)
+                connectStandalone(device, profile)
+            }
+        } else {
+            fallbackToBridge()
+        }
+        return true
+    }
+
+    private fun clearDirectRetry() {
+        directRetryJob?.cancel()
+        directRetryJob = null
+        directRetryDevice = null
+        directRetryProfile = null
+        directRetryCount = 0
+    }
+
+    /** 直连彻底失败后回退到桥接模式（若桥接可用会由 hook 广播补齐状态）。 */
+    private fun fallbackToBridge() {
+        clearDirectRetry()
+        _transport.value = ConnectionTransport.HOOK_BRIDGE
+        _connectionState.value = DeviceConnectionState.CONNECTED
+        _connectedDevice.value = null
+        connectedProfileId = null
     }
 
     @SuppressLint("MissingPermission")
@@ -496,10 +572,16 @@ class DeviceControlStore(
             }
             when (state) {
                 StandaloneGattClient.ConnectionState.DISCONNECTED -> {
-                    if (_transport.value == ConnectionTransport.DIRECT_BLE) {
+                    // 直连尝试期间断开 = 本次直连失败，交给重试/回退逻辑
+                    if (directRetryDevice != null &&
+                        _connectionState.value != DeviceConnectionState.CONNECTED
+                    ) {
+                        onDirectConnectFailed()
+                    } else if (_transport.value == ConnectionTransport.DIRECT_BLE) {
                         _connectionState.value = DeviceConnectionState.DISCONNECTED
                         _transport.value = ConnectionTransport.NONE
                         clearState()
+                        broadcastDeviceDisconnected()
                     }
                 }
 
@@ -509,6 +591,7 @@ class DeviceControlStore(
                 }
 
                 StandaloneGattClient.ConnectionState.CONNECTED -> {
+                    clearDirectRetry()
                     _connectionState.value = DeviceConnectionState.CONNECTED
                     _transport.value = ConnectionTransport.DIRECT_BLE
                 }
@@ -523,12 +606,15 @@ class DeviceControlStore(
 
         directGattClient.battery.onEach {
             _battery.value = it?.withLastKnownCaseBattery(_battery.value)
-            if (it != null) broadcastToSystem(HyperRoseAction.BATTERY_CHANGED) {
-                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, it.left?.level ?: -1)
-                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, it.right?.level ?: -1)
-                putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
-                putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
-                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+            if (it != null) {
+                broadcastToSystem(HyperRoseAction.BATTERY_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, it.left?.level ?: -1)
+                    putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, it.right?.level ?: -1)
+                    putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
+                    putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
+                    putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+                }
+                broadcastFocusIsland(it)
             }
         }.launchIn(scope)
 
@@ -589,11 +675,18 @@ class DeviceControlStore(
 
     private fun observeDirectRfcomm(client: StandaloneRfcommClient) {
         client.connectionState.onEach { state ->
+            if (client !== directRfcommClient) return@onEach
             when (state) {
                 StandaloneRfcommClient.ConnectionState.DISCONNECTED -> {
-                    if (_transport.value == ConnectionTransport.DIRECT_RFCOMM) {
+                    if (directRetryDevice != null &&
+                        _connectionState.value != DeviceConnectionState.CONNECTED
+                    ) {
+                        onDirectConnectFailed()
+                    } else if (_transport.value == ConnectionTransport.DIRECT_RFCOMM) {
                         _connectionState.value = DeviceConnectionState.DISCONNECTED
                         _transport.value = ConnectionTransport.NONE
+                        clearState()
+                        broadcastDeviceDisconnected()
                     }
                 }
 
@@ -603,6 +696,7 @@ class DeviceControlStore(
                 }
 
                 StandaloneRfcommClient.ConnectionState.CONNECTED -> {
+                    clearDirectRetry()
                     _transport.value = ConnectionTransport.DIRECT_RFCOMM
                     _connectionState.value = DeviceConnectionState.CONNECTED
                 }
@@ -615,12 +709,15 @@ class DeviceControlStore(
 
         client.battery.onEach {
             _battery.value = it?.withLastKnownCaseBattery(_battery.value)
-            if (it != null) broadcastToSystem(HyperRoseAction.BATTERY_CHANGED) {
-                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, it.left?.level ?: -1)
-                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, it.right?.level ?: -1)
-                putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
-                putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
-                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+            if (it != null) {
+                broadcastToSystem(HyperRoseAction.BATTERY_CHANGED) {
+                    putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, it.left?.level ?: -1)
+                    putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, it.right?.level ?: -1)
+                    putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
+                    putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
+                    putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+                }
+                broadcastFocusIsland(it)
             }
         }.launchIn(scope)
 
@@ -689,12 +786,97 @@ class DeviceControlStore(
         }
     }
 
+    private fun broadcastFocusIsland(battery: TwsBatteryState) {
+        val device = _connectedDevice.value ?: return
+        val pid = connectedProfileId
+            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(device.name ?: "")?.id
+            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.id
+        val isMono = battery.right == null && battery.caseBattery == null
+        val color = defaultProfileColorFor(pid).lowercase()
+        val leftImage = resolveIslandImage(pid, color, leftSide = true)
+        val rightImage = if (isMono) null else resolveIslandImage(pid, color, leftSide = false)
+        appContext.sendBroadcast(
+            Intent(HyperRoseAction.SHOW_ISLAND).apply {
+                setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
+                addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, if (isMono) -1 else (battery.left?.level ?: -1))
+                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, if (isMono) -1 else (battery.right?.level ?: -1))
+                putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, battery.left?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, battery.right?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
+                putExtra(HyperRoseAction.EXTRA_DEVICE, device)
+                putExtra(HyperRoseAction.EXTRA_PROFILE_ID, pid)
+                putExtra(HyperRoseAction.EXTRA_COLOR, color)
+                putExtra(HyperRoseAction.EXTRA_LEFT_IMAGE, leftImage)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE, rightImage)
+            },
+        )
+    }
+
+    private fun defaultProfileColorFor(profileId: String): String = when (profileId) {
+        "rose-earfree-i5" -> "GRAY"
+        "rose-budsfeel-mk2" -> "BLACK"
+        "rose-cambrian" -> "BLUE"
+        else -> "GRAY"
+    }
+
+    private fun resolveIslandImage(profileId: String, color: String, leftSide: Boolean): String? =
+        when (profileId) {
+            "rose-cambrian" -> when (color) {
+                "gray" -> "earphone_i5_gray_${if (leftSide) "left" else "right"}"
+                "black" -> "earphone_mk2_black_${if (leftSide) "left" else "right"}"
+                else -> "earphone_cambrian_blue"
+            }
+            "rose-earfree-i5" -> "earphone_i5_${color}_${if (leftSide) "left" else "right"}"
+            "rose-budsfeel-mk2" -> "earphone_mk2_${color}_${if (leftSide) "left" else "right"}"
+            else -> null
+        }
+
+    private fun broadcastFocusIslandWithColor(battery: TwsBatteryState, colorName: String) {
+        val device = _connectedDevice.value ?: return
+        val pid = connectedProfileId
+            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(device.name ?: "")?.id
+            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.id
+        val isMono = battery.right == null && battery.caseBattery == null
+        val color = colorName.lowercase()
+        val leftImage = resolveIslandImage(pid, color, leftSide = true)
+        val rightImage = if (isMono) null else resolveIslandImage(pid, color, leftSide = false)
+        appContext.sendBroadcast(
+            Intent(HyperRoseAction.SHOW_ISLAND).apply {
+                setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
+                addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, if (isMono) -1 else (battery.left?.level ?: -1))
+                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, if (isMono) -1 else (battery.right?.level ?: -1))
+                putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, battery.left?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, battery.right?.isCharging ?: false)
+                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
+                putExtra(HyperRoseAction.EXTRA_DEVICE, device)
+                putExtra(HyperRoseAction.EXTRA_PROFILE_ID, pid)
+                putExtra(HyperRoseAction.EXTRA_COLOR, color)
+                putExtra(HyperRoseAction.EXTRA_LEFT_IMAGE, leftImage)
+                putExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE, rightImage)
+            },
+        )
+    }
+
+    private fun broadcastDeviceDisconnected() {
+        val device = _connectedDevice.value ?: return
+        appContext.sendBroadcast(
+            Intent(HyperRoseAction.DEVICE_DISCONNECTED).apply {
+                setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
+                addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                putExtra(HyperRoseAction.EXTRA_DEVICE, device)
+            },
+        )
+    }
+
     private fun registerBridgeReceiver() {
         if (receiverRegistered) return
         val filter =
             IntentFilter().apply {
                 HyperRoseAction.BRIDGE_STATE_ACTIONS.forEach(::addAction)
                 addAction(HyperRoseAction.ANC_SELECT)
+                addAction(HyperRoseAction.DEVICE_COLOR_CHANGED)
             }
         appContext.registerReceiver(bridgeReceiver, filter, Context.RECEIVER_EXPORTED)
         receiverRegistered = true
@@ -756,6 +938,8 @@ class DeviceControlStore(
 
     private fun clearState() {
         _deviceName.value = null
+        _connectedDevice.value = null
+        connectedProfileId = null
         _battery.value = null
         _ancMode.value = null
         _ancDepth.value = null

@@ -37,8 +37,8 @@ fun BatteryCard(
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             BatteryCell(
-                iconRes = if (b?.right == null) R.drawable.battery_charge else R.drawable.battery_left,
-                label = if (b?.right == null) "充电盒" else "左耳",
+                iconRes = R.drawable.battery_left,
+                label = "左耳",
                 value = b?.left?.level,
                 charging = b?.left?.isCharging == true,
                 modifier = Modifier.weight(1f),

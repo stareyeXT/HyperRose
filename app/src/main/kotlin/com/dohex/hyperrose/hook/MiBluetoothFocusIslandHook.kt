@@ -10,6 +10,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.BitmapFactory
+import android.graphics.drawable.Icon
 import android.util.Log
 import com.dohex.hyperrose.hook.HyperRoseModuleEntry.Companion.TAG
 import com.dohex.hyperrose.ipc.QuickControlIntentFactory
@@ -28,12 +30,15 @@ object MiBluetoothFocusIslandHook {
     private const val ISLAND_TIMEOUT_SECONDS = 30
     private const val QUICK_CONTROL_REQUEST_CODE = 10086
     private var receiverRegistered = false
+    private var moduleContext: Context? = null
     private var lastKnownCaseLevel: Int? = null
     private var lastIslandLeft = -1
     private var lastIslandRight = -1
     private var lastIslandCase = -1
     private var lastIslandLeftCharging = false
     private var lastIslandRightCharging = false
+    private var lastLeftImageName: String? = null
+    private var lastRightImageName: String? = null
 
     @SuppressLint("PrivateApi")
     fun init(
@@ -96,6 +101,12 @@ object MiBluetoothFocusIslandHook {
     ) {
         if (receiverRegistered) return
 
+        if (moduleContext == null) {
+            moduleContext = runCatching {
+                context.createPackageContext("com.dohex.hyperrose", Context.CONTEXT_IGNORE_SECURITY)
+            }.getOrNull()
+        }
+
         val receiver =
             object : BroadcastReceiver() {
                 override fun onReceive(
@@ -125,11 +136,16 @@ object MiBluetoothFocusIslandHook {
                                 intent.getBooleanExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, false)
                             if (left < 0 && right < 0 && caseLevel < 0) return
 
-                            // 电量无变化时跳过通知，避免锁屏下重复触发动效
+                            val leftImageName = intent.getStringExtra(HyperRoseAction.EXTRA_LEFT_IMAGE)
+                            val rightImageName = intent.getStringExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE)
+
+                            // 电量 + 图片无变化时跳过，避免锁屏下重复触发动效
                             if (left == lastIslandLeft && right == lastIslandRight &&
                                 caseLevel == lastIslandCase &&
                                 leftCharging == lastIslandLeftCharging &&
-                                rightCharging == lastIslandRightCharging
+                                rightCharging == lastIslandRightCharging &&
+                                leftImageName == lastLeftImageName &&
+                                rightImageName == lastRightImageName
                             ) {
                                 return
                             }
@@ -139,12 +155,17 @@ object MiBluetoothFocusIslandHook {
                             lastIslandCase = caseLevel
                             lastIslandLeftCharging = leftCharging
                             lastIslandRightCharging = rightCharging
+                            lastLeftImageName = leftImageName
+                            lastRightImageName = rightImageName
 
                             val device =
                                 intent.getParcelableExtra(
                                     HyperRoseAction.EXTRA_DEVICE,
                                     BluetoothDevice::class.java,
                                 )
+
+                            val leftIcon = resolveIcon(leftImageName)
+                            val rightIcon = resolveIcon(rightImageName)
 
                             runCatching {
                                 showIsland(
@@ -155,6 +176,8 @@ object MiBluetoothFocusIslandHook {
                                     caseLevel = caseLevel,
                                     leftCharging = leftCharging,
                                     rightCharging = rightCharging,
+                                    leftIcon = leftIcon,
+                                    rightIcon = rightIcon,
                                 )
                             }.onFailure {
                                 module.log(
@@ -173,6 +196,8 @@ object MiBluetoothFocusIslandHook {
                             lastIslandCase = -1
                             lastIslandLeftCharging = false
                             lastIslandRightCharging = false
+                            lastLeftImageName = null
+                            lastRightImageName = null
                         }
 
                         HyperRoseAction.DEVICE_DISCONNECTED -> {
@@ -182,7 +207,19 @@ object MiBluetoothFocusIslandHook {
                             lastIslandCase = -1
                             lastIslandLeftCharging = false
                             lastIslandRightCharging = false
+                            lastLeftImageName = null
+                            lastRightImageName = null
                             cancelIsland(ctx)
+                        }
+
+                        Intent.ACTION_USER_PRESENT -> {
+                            lastIslandLeft = -1
+                            lastIslandRight = -1
+                            lastIslandCase = -1
+                            lastIslandLeftCharging = false
+                            lastIslandRightCharging = false
+                            lastLeftImageName = null
+                            lastRightImageName = null
                         }
                     }
                 }
@@ -190,6 +227,7 @@ object MiBluetoothFocusIslandHook {
 
         val filter =
             IntentFilter(HyperRoseAction.SHOW_ISLAND).apply {
+                addAction(Intent.ACTION_USER_PRESENT)
                 HyperRoseAction.BRIDGE_STATE_ACTIONS
                     .asSequence()
                     .filter {
@@ -210,6 +248,8 @@ object MiBluetoothFocusIslandHook {
         caseLevel: Int,
         leftCharging: Boolean,
         rightCharging: Boolean,
+        leftIcon: Icon?,
+        rightIcon: Icon?,
     ) {
         val nm =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
@@ -231,7 +271,9 @@ object MiBluetoothFocusIslandHook {
                 rightCharging = rightCharging,
                 islandTimeoutSeconds = ISLAND_TIMEOUT_SECONDS,
                 deviceName = device?.name ?: "耳机",
-            )
+                leftIcon = leftIcon,
+                rightIcon = rightIcon,
+            ) ?: return
 
         val channel =
             NotificationChannel(
@@ -252,6 +294,7 @@ object MiBluetoothFocusIslandHook {
                 .setContentText(content)
                 .setStyle(Notification.BigTextStyle().bigText(content))
                 .setOnlyAlertOnce(true)
+                .setOngoing(true)
                 .setContentIntent(buildQuickControlPendingIntent(context, device, left, right))
         builder.addExtras(extras)
 
@@ -306,6 +349,15 @@ object MiBluetoothFocusIslandHook {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+    }
+
+    private fun resolveIcon(drawableName: String?): Icon? {
+        if (drawableName == null) return null
+        val ctx = moduleContext ?: return null
+        val resId = ctx.resources.getIdentifier(drawableName, "drawable", "com.dohex.hyperrose")
+        if (resId == 0) return null
+        val bitmap = BitmapFactory.decodeResource(ctx.resources, resId) ?: return null
+        return Icon.createWithBitmap(bitmap)
     }
 
     private fun cancelIsland(context: Context) {

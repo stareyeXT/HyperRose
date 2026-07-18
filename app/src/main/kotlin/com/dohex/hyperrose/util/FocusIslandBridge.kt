@@ -1,5 +1,6 @@
 package com.dohex.hyperrose.util
 
+import android.graphics.drawable.Icon
 import android.os.Bundle
 import com.dohex.hyperrose.model.asBatteryLevelOrNull
 import com.xzakota.hyper.notification.focus.FocusNotification
@@ -15,7 +16,9 @@ object FocusIslandBridge {
         rightCharging: Boolean,
         islandTimeoutSeconds: Int,
         deviceName: String = "ROSE CAMBRIAN",
-    ): Bundle {
+        leftIcon: Icon? = null,
+        rightIcon: Icon? = null,
+    ): Bundle? {
         val normalizedLeftLevel = leftLevel.asBatteryLevelOrNull()
         val normalizedRightLevel = rightLevel.asBatteryLevelOrNull()
         val normalizedCaseLevel = caseLevel.asBatteryLevelOrNull()
@@ -31,7 +34,7 @@ object FocusIslandBridge {
                 leftCharging = leftCharging,
                 rightCharging = rightCharging,
             )
-        val aodTitle =
+        val aodTitleValue =
             if (isMonoCase) "$normalizedCaseLevel%"
             else if (normalizedRightLevel == null) "$leftText%${if (leftCharging) "⚡" else ""}"
             else buildString {
@@ -40,30 +43,64 @@ object FocusIslandBridge {
                 append(" R$rightText%")
                 if (rightCharging) append("⚡")
             }
+
         return FocusNotification.buildV3 {
+            val picLeft = if (leftIcon != null) createPicture("key_pic_left", leftIcon) else null
+            val picRight = if (rightIcon != null) createPicture("key_pic_right", rightIcon) else null
+
             enableFloat = false
-            islandFirstFloat = true
+            cancel = false
             ticker = TICKER_TEXT
-            updatable = true
+            if (picLeft != null) tickerPic = picLeft
+
             isShowNotification = true
-            this.aodTitle = aodTitle
+            this.aodTitle = aodTitleValue
             island {
                 islandProperty = 1
+                dismissIsland = false
                 islandTimeout = islandTimeoutSeconds
                 bigIslandArea {
-                    imageTextInfoLeft {
-                        type = 1
-                        textInfo {
-                            title = leftText
-                            content = "%"
+                    if (picLeft != null) {
+                        imageTextInfoLeft {
+                            type = 1
+                            picInfo {
+                                type = 1
+                                pic = picLeft
+                            }
+                            textInfo {
+                                title = leftText
+                                content = "%"
+                            }
+                        }
+                    } else {
+                        imageTextInfoLeft {
+                            type = 1
+                            textInfo {
+                                title = leftText
+                                content = "%"
+                            }
                         }
                     }
-                    if (rightText.isNotEmpty()) {
-                        imageTextInfoRight {
-                            type = 2
-                            textInfo {
-                                title = rightText
-                                content = "%"
+                    if (rightText.isNotEmpty() || picRight != null) {
+                        if (picRight != null) {
+                            imageTextInfoRight {
+                                type = 2
+                                picInfo {
+                                    type = 1
+                                    pic = picRight
+                                }
+                                textInfo {
+                                    title = rightText
+                                    content = "%"
+                                }
+                            }
+                        } else {
+                            imageTextInfoRight {
+                                type = 2
+                                textInfo {
+                                    title = rightText
+                                    content = "%"
+                                }
                             }
                         }
                     }

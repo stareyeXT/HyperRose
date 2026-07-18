@@ -27,6 +27,9 @@ object HyperRoseIpc {
     const val GAME_MODE_CHANGED = "$PREFIX.game_mode_changed"
     const val LOW_LATENCY_CHANGED = "$PREFIX.low_latency_changed"
 
+    // App → Bluetooth 进程（颜色变更通知）
+    const val DEVICE_COLOR_CHANGED = "$PREFIX.device_color_changed"
+
     // App → Bluetooth 进程（白名单变更通知）
     const val WHITELIST_CHANGED = "$PREFIX.whitelist_changed"
 
@@ -70,6 +73,9 @@ object HyperRoseIpc {
     const val EXTRA_LEFT_CHARGING = "$EXTRA_PREFIX.left_charging"
     const val EXTRA_RIGHT_CHARGING = "$EXTRA_PREFIX.right_charging"
     const val EXTRA_CASE_LEVEL = "$EXTRA_PREFIX.case_level"
+    const val EXTRA_LEFT_IMAGE = "$EXTRA_PREFIX.left_image"
+    const val EXTRA_RIGHT_IMAGE = "$EXTRA_PREFIX.right_image"
+    const val EXTRA_COLOR = "$EXTRA_PREFIX.color"
     const val EXTRA_HEX = "$EXTRA_PREFIX.hex"
     const val EXTRA_LOG_SOURCE = "$EXTRA_PREFIX.log_source"
     const val EXTRA_LOG_DIRECTION = "$EXTRA_PREFIX.log_direction"
