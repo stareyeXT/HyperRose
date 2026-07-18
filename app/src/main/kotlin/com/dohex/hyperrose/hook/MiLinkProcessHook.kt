@@ -134,8 +134,9 @@ object MiLinkProcessHook {
 
             // String address 参数的方法
             hookStringAddressResult(module, clazz, "isMiTWS") { true }
-            hookStringAddressResult(module, clazz, "isSupportAudioSwitch") { 1 }
+            hookStringAddressResult(module, clazz, "isSupportAudioSwitch") { miLinkSwitchState() }
             hookStringAddressResult(module, clazz, "getRingFindState") { false }
+            hookStringAddressResult(module, clazz, "getSwitchState") { miLinkSwitchState() }
 
             // ANC 命令拦截
             hookAncCommand(module, clazz, "openAnc", AncMode.NOISE_CANCEL)
@@ -163,6 +164,7 @@ object MiLinkProcessHook {
             hookDeviceResult(module, clazz, "getAncState") { miLinkAncState() }
             hookDeviceResult(module, clazz, "getBatteryLevelCache") { buildMiLinkBatteryList() }
             hookDeviceResult(module, clazz, "getHeadsetPropertyBlock") { batteryPercentForMiLink() }
+            hookDeviceResult(module, clazz, "getSwitchState") { miLinkSwitchState() }
             hookAncStateBlock(module, clazz)
         }.onFailure { module.log(Log.WARN, LOG_TAG, "AncBatteryController hook skipped", it) }
     }
@@ -177,6 +179,8 @@ object MiLinkProcessHook {
             hookNoArgResult(module, clazz, "component4") { buildMiLinkBatteryList() }
             hookNoArgResult(module, clazz, "getMode") { miLinkAncState() }
             hookNoArgResult(module, clazz, "component5") { miLinkAncState() }
+            hookNoArgResult(module, clazz, "getSwitchState") { miLinkSwitchState() }
+            hookNoArgResult(module, clazz, "component8") { miLinkSwitchState() }
         }.onFailure { module.log(Log.WARN, LOG_TAG, "HeadsetInfo hook skipped", it) }
     }
 
@@ -551,6 +555,9 @@ object MiLinkProcessHook {
         AncMode.TRANSPARENT -> 2
         AncMode.NORMAL, null -> 0
     }
+
+    /** MiLink 切换状态：1 = 支持设备流转，0 = 不支持 */
+    private fun miLinkSwitchState(): Int = 1
 
     /** MiLink ANC 模式 → HyperRose AncMode */
     private fun roseAncFromMiLink(miLinkMode: Int): AncMode? = when (miLinkMode) {

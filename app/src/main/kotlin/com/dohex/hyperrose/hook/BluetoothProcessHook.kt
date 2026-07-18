@@ -111,6 +111,14 @@ object BluetoothProcessHook {
                 e
             )
         }
+
+        // Hook 系统连接弹窗，注入真实电量
+        try {
+            hookConnectedToast(module, cl)
+        } catch (e: Throwable) {
+            module.log(Log.ERROR, TAG, "BluetoothProcessHook: failed to hook connected toast", e)
+        }
+
         module.log(
             Log.INFO,
             TAG,
@@ -205,6 +213,42 @@ object BluetoothProcessHook {
                 },
             )
         }
+    }
+
+    /** 耳机佩戴状态：1=双耳 2=右耳 3=左耳 */
+    private fun wearState(battery: com.dohex.hyperrose.model.TwsBatteryState): Int = when {
+        battery.left != null && battery.right != null -> 1
+        battery.right != null -> 2
+        battery.left != null -> 3
+        else -> 1
+    }
+
+    @SuppressLint("PrivateApi")
+    private fun hookConnectedToast(module: XposedModule, cl: ClassLoader) {
+        val apiClass = runCatching { cl.loadClass("com.android.bluetooth.ble.app.MiuiBluetoothNotificationApi") }.getOrNull() ?: return
+        val notifClass = runCatching { cl.loadClass("com.android.bluetooth.ble.app.MiuiBluetoothNotification") }.getOrNull() ?: return
+        runCatching {
+            val method = notifClass.getDeclaredMethod("showConnectedToast", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, BluetoothDevice::class.java, String::class.java)
+            method.isAccessible = true
+            val toastMethod = method
+            val hookMethod = apiClass.getDeclaredMethod("showNewConnectedToast", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, BluetoothDevice::class.java, String::class.java)
+            module.hook(hookMethod)?.intercept { chain ->
+                val device = chain.getArg(4) as? BluetoothDevice ?: return@intercept chain.proceed()
+                if (!isSupportedDevice(device)) return@intercept chain.proceed()
+                val battery = session?.currentBattery ?: return@intercept chain.proceed()
+                val leftLevel = battery.left?.level?.coerceIn(0, 100) ?: (chain.getArg(1) as Int)
+                val rightLevel = battery.right?.level?.coerceIn(0, 100) ?: (chain.getArg(2) as Int)
+                val ws = wearState(battery)
+                val notifObj = runCatching {
+                    val a2dp = cl.loadClass("com.android.bluetooth.a2dp.A2dpService")
+                    a2dp.getDeclaredField("mMiuiBluetoothNotification").apply { isAccessible = true }.get(null)
+                }.getOrNull() ?: return@intercept chain.proceed()
+                toastMethod.invoke(notifObj, chain.getArg(0), leftLevel, rightLevel, ws, device, chain.getArg(5))
+                module.log(Log.DEBUG, TAG, "Connected toast patched for ${device.address} L=$leftLevel R=$rightLevel")
+                return@intercept null
+            }
+            module.log(Log.INFO, TAG, "Hooked MiuiBluetoothNotificationApi.showNewConnectedToast")
+        }.onFailure { module.log(Log.WARN, TAG, "Hook showNewConnectedToast skipped", it) }
     }
 
     private fun resolveContext(serviceObj: Any): Context? = try {
