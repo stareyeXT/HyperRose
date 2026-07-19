@@ -39,7 +39,7 @@ object BluetoothCommandDispatcher {
         context: Context,
         mode: EqPreset,
     ) {
-        send(context, HyperRoseIpc.SET_EQ) { putExtra(HyperRoseIpc.EXTRA_MODE, mode.name) }
+        send(context, HyperRoseIpc.SET_EQ) { putExtra(HyperRoseIpc.EXTRA_EQ_MODE, mode.name) }
     }
 
     fun setGameMode(

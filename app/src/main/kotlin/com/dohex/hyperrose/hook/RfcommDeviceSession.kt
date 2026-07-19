@@ -26,17 +26,25 @@ class RfcommDeviceSession(
     private var connectThread: Thread? = null
     private val pendingCommands = ConcurrentLinkedQueue<Pair<ByteArray, String>>()
     private var running = false
+    @Volatile
+    private var connectCancelled = false
 
     override fun connect(device: BluetoothDevice) {
         connectedDevice = device
         module.log(Log.INFO, TAG, "RfcommDeviceSession: connecting to ${device.address}")
         registerRefreshReceiver()
+        connectCancelled = false
 
         val transport = profile.transport as TransportSpec.Rfcomm
         connectThread = Thread {
             try {
                 val socket = device.createRfcommSocketToServiceRecord(transport.dataChannelUuid)
                 socket.connect()
+                if (connectCancelled) {
+                    module.log(Log.INFO, TAG, "RfcommDeviceSession: connect cancelled after socket opened")
+                    runCatching { socket.close() }
+                    return@Thread
+                }
                 module.log(Log.INFO, TAG, "RfcommDeviceSession: RFCOMM connected")
                 dataSocket = socket
                 startReader()
@@ -44,9 +52,11 @@ class RfcommDeviceSession(
                 queryAllStatus()
                 broadcastDeviceConnected()
             } catch (e: IOException) {
-                module.log(Log.ERROR, TAG, "RfcommDeviceSession: connect failed", e)
-                pendingCommands.clear()
-                disconnect()
+                if (!connectCancelled) {
+                    module.log(Log.ERROR, TAG, "RfcommDeviceSession: connect failed", e)
+                    pendingCommands.clear()
+                    disconnect()
+                }
             }
         }.apply {
             name = "RfcommConnect"
@@ -56,6 +66,7 @@ class RfcommDeviceSession(
     }
 
     override fun disconnect() {
+        connectCancelled = true
         running = false
         readerThread?.interrupt()
         readerThread = null
@@ -68,7 +79,7 @@ class RfcommDeviceSession(
         }
         dataSocket = null
         connectedDevice = null
-        handler.removeCallbacksAndMessages(null)
+        cleanupSession()
         currentBattery = null
         currentAnc = null
         currentAncDepth = null

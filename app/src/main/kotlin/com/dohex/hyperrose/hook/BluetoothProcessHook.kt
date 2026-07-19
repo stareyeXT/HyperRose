@@ -395,7 +395,7 @@ object BluetoothProcessHook {
 
                             HyperRoseAction.SET_EQ -> {
                                 val mode =
-                                    intent.getStringExtra(HyperRoseAction.EXTRA_MODE)
+                                    intent.getStringExtra(HyperRoseAction.EXTRA_EQ_MODE)
                                         ?.let(EqPreset::valueOf)
                                         ?: return
                                 manager.sendCommand(

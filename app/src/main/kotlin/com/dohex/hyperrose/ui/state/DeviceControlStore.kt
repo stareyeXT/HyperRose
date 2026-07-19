@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.dohex.hyperrose.ipc.HyperRoseIpc as HyperRoseAction
 
 enum class DeviceConnectionState {
@@ -71,6 +72,7 @@ class DeviceControlStore(
     private var directRetryProfile: com.dohex.hyperrose.profile.DeviceProfile? = null
     private var directRetryCount = 0
     private var directRetryJob: Job? = null
+    private var rfcommObserverJobs: List<Job> = emptyList()
 
     companion object {
         private const val BRIDGE_TIMEOUT_MS = 5_000L
@@ -227,7 +229,7 @@ class DeviceControlStore(
                 }
 
                 HyperRoseAction.EQ_CHANGED -> {
-                    intent.enumExtra<EqPreset>(HyperRoseAction.EXTRA_MODE)
+                    intent.enumExtra<EqPreset>(HyperRoseAction.EXTRA_EQ_MODE)
                         ?.let { _eqMode.value = it }
                 }
 
@@ -268,10 +270,12 @@ class DeviceControlStore(
             refreshPermissionState()
             if (!_hasBluetoothPermission.value) return
         }
-        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
-        val preferred = adapter.bondedDevices.firstOrNull { device ->
-            val name = device.name ?: return@firstOrNull false
-            com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) != null
+        val preferred = withContext(Dispatchers.IO) {
+            val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@withContext null
+            adapter.bondedDevices.firstOrNull { device ->
+                val name = device.name ?: return@firstOrNull false
+                com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) != null
+            }
         } ?: return
         val profile =
             com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(preferred.name ?: "")
@@ -302,38 +306,42 @@ class DeviceControlStore(
             _pairedDevices.value = emptyList()
             return
         }
-
-        val adapter = BluetoothAdapter.getDefaultAdapter() ?: run {
-            _pairedDevices.value = emptyList()
-            return
+        scope.launch {
+            val items = withContext(Dispatchers.IO) {
+                val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@withContext emptyList()
+                adapter.bondedDevices.mapNotNull { device ->
+                    val name = device.name ?: device.alias ?: return@mapNotNull null
+                    if (com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) == null) return@mapNotNull null
+                    RoseDeviceItem(name = name, address = device.address)
+                }.sortedWith(
+                    compareBy<RoseDeviceItem> {
+                        com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(it.name)?.let { profile ->
+                            com.dohex.hyperrose.profile.DeviceProfileRegistry.profiles.indexOf(profile)
+                        } ?: Int.MAX_VALUE
+                    }.thenBy { it.name.lowercase() }.thenBy { it.address },
+                )
+            }
+            _pairedDevices.value = items
         }
-
-        _pairedDevices.value = adapter.bondedDevices.mapNotNull { device ->
-            val name = device.name ?: device.alias ?: return@mapNotNull null
-            if (com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) == null) return@mapNotNull null
-            RoseDeviceItem(name = name, address = device.address)
-        }.sortedWith(
-            compareBy<RoseDeviceItem> {
-                com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(it.name)?.let { profile ->
-                    com.dohex.hyperrose.profile.DeviceProfileRegistry.profiles.indexOf(profile)
-                } ?: Int.MAX_VALUE
-            }.thenBy { it.name.lowercase() }.thenBy { it.address },
-        )
     }
 
     @SuppressLint("MissingPermission")
     fun connectDirect(address: String) {
         if (!_hasBluetoothPermission.value) return
-        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
-        val bonded = adapter.bondedDevices.firstOrNull { it.address == address } ?: return
-        com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, address)
-        val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
-        _deviceName.value = bonded.name ?: address
-        _connectedDevice.value = bonded
-        connectedProfileId = profile?.id
-        _capabilities.value = profile?.capabilities
-            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
-        attemptDirectConnect(bonded, profile)
+        scope.launch {
+            val bonded = withContext(Dispatchers.IO) {
+                val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@withContext null
+                adapter.bondedDevices.firstOrNull { it.address == address }
+            } ?: return@launch
+            com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, address)
+            val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
+            _deviceName.value = bonded.name ?: address
+            _connectedDevice.value = bonded
+            connectedProfileId = profile?.id
+            _capabilities.value = profile?.capabilities
+                ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
+            attemptDirectConnect(bonded, profile)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -342,16 +350,20 @@ class DeviceControlStore(
         if (_connectionState.value == DeviceConnectionState.CONNECTED &&
             _transport.value == ConnectionTransport.DIRECT_RFCOMM
         ) return
-        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
-        val bonded = adapter.bondedDevices.firstOrNull { it.address == address } ?: return
-        val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
-        _deviceName.value = bonded.name ?: address
-        _connectedDevice.value = bonded
-        connectedProfileId = profile?.id
-        _capabilities.value = profile?.capabilities
-            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
-        com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, address)
-        attemptDirectConnect(bonded, profile)
+        scope.launch {
+            val bonded = withContext(Dispatchers.IO) {
+                val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@withContext null
+                adapter.bondedDevices.firstOrNull { it.address == address }
+            } ?: return@launch
+            val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
+            _deviceName.value = bonded.name ?: address
+            _connectedDevice.value = bonded
+            connectedProfileId = profile?.id
+            _capabilities.value = profile?.capabilities
+                ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
+            com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, address)
+            attemptDirectConnect(bonded, profile)
+        }
     }
 
     /**
@@ -414,9 +426,11 @@ class DeviceControlStore(
         when (profile?.transport) {
             is TransportSpec.Rfcomm -> {
                 directRfcommClient?.disconnect()
+                rfcommObserverJobs.forEach { it.cancel() }
+                rfcommObserverJobs = emptyList()
                 val client = StandaloneRfcommClient(appContext, profile)
                 directRfcommClient = client
-                observeDirectRfcomm(client)
+                rfcommObserverJobs = observeDirectRfcomm(client)
                 _capabilities.value = profile.capabilities
                 _transport.value = ConnectionTransport.DIRECT_RFCOMM
                 _connectionState.value = DeviceConnectionState.CONNECTING
@@ -525,6 +539,7 @@ class DeviceControlStore(
 
     fun disconnect() {
         bridgeFallbackJob?.cancel()
+        clearDirectRetry()
         directRfcommClient?.disconnect()
         directGattClient.disconnect()
         BluetoothCommandDispatcher.disconnectGatt(appContext)
@@ -555,10 +570,13 @@ class DeviceControlStore(
 
     fun release() {
         bridgeFallbackJob?.cancel()
+        directRetryJob?.cancel()
         if (receiverRegistered) {
             runCatching { appContext.unregisterReceiver(bridgeReceiver) }
             receiverRegistered = false
         }
+        rfcommObserverJobs.forEach { it.cancel() }
+        rfcommObserverJobs = emptyList()
         directRfcommClient?.disconnect()
         directRfcommClient = null
         directGattClient.disconnect()
@@ -649,7 +667,7 @@ class DeviceControlStore(
             if (it != null) {
                 _eqMode.value = it
                 broadcastToSystem(HyperRoseAction.EQ_CHANGED) {
-                    putExtra(HyperRoseAction.EXTRA_MODE, it.name)
+                    putExtra(HyperRoseAction.EXTRA_EQ_MODE, it.name)
                 }
             }
         }.launchIn(scope)
@@ -673,7 +691,8 @@ class DeviceControlStore(
         }.launchIn(scope)
     }
 
-    private fun observeDirectRfcomm(client: StandaloneRfcommClient) {
+    private fun observeDirectRfcomm(client: StandaloneRfcommClient): List<Job> {
+        val jobs = mutableListOf<Job>()
         client.connectionState.onEach { state ->
             if (client !== directRfcommClient) return@onEach
             when (state) {
@@ -701,13 +720,15 @@ class DeviceControlStore(
                     _connectionState.value = DeviceConnectionState.CONNECTED
                 }
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
 
         client.deviceName.onEach { name ->
+            if (client !== directRfcommClient) return@onEach
             if (!name.isNullOrBlank()) _deviceName.value = name
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
 
         client.battery.onEach {
+            if (client !== directRfcommClient) return@onEach
             _battery.value = it?.withLastKnownCaseBattery(_battery.value)
             if (it != null) {
                 broadcastToSystem(HyperRoseAction.BATTERY_CHANGED) {
@@ -719,56 +740,63 @@ class DeviceControlStore(
                 }
                 broadcastFocusIsland(it)
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
 
         client.ancMode.onEach {
+            if (client !== directRfcommClient) return@onEach
             if (it != null) {
                 _ancMode.value = it
                 broadcastToSystem(HyperRoseAction.ANC_CHANGED) {
                     putExtra(HyperRoseAction.EXTRA_MODE, it.name)
                 }
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
         client.ancDepth.onEach {
+            if (client !== directRfcommClient) return@onEach
             if (it != null) {
                 _ancDepth.value = it
                 broadcastToSystem(HyperRoseAction.ANC_DEPTH_CHANGED) {
                     putExtra(HyperRoseAction.EXTRA_DEPTH, it.name)
                 }
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
         client.transLevel.onEach {
+            if (client !== directRfcommClient) return@onEach
             if (it != null) {
                 _transLevel.value = it
                 broadcastToSystem(HyperRoseAction.TRANS_LEVEL_CHANGED) {
                     putExtra(HyperRoseAction.EXTRA_LEVEL, it.name)
                 }
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
         client.eqMode.onEach {
+            if (client !== directRfcommClient) return@onEach
             if (it != null) {
                 _eqMode.value = it
                 broadcastToSystem(HyperRoseAction.EQ_CHANGED) {
-                    putExtra(HyperRoseAction.EXTRA_MODE, it.name)
+                    putExtra(HyperRoseAction.EXTRA_EQ_MODE, it.name)
                 }
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
         client.gameMode.onEach {
+            if (client !== directRfcommClient) return@onEach
             if (it != null) {
                 _gameMode.value = it
                 broadcastToSystem(HyperRoseAction.GAME_MODE_CHANGED) {
                     putExtra(HyperRoseAction.EXTRA_ENABLED, it)
                 }
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
         client.lowLatency.onEach {
+            if (client !== directRfcommClient) return@onEach
             if (it != null) {
                 _lowLatency.value = it
                 broadcastToSystem(HyperRoseAction.LOW_LATENCY_CHANGED) {
                     putExtra(HyperRoseAction.EXTRA_ENABLED, it)
                 }
             }
-        }.launchIn(scope)
+        }.also { jobs.add(it.launchIn(scope)) }
+        return jobs
     }
 
     private fun broadcastToSystem(action: String, extras: Intent.() -> Unit) {
@@ -813,24 +841,17 @@ class DeviceControlStore(
         )
     }
 
-    private fun defaultProfileColorFor(profileId: String): String = when (profileId) {
-        "rose-earfree-i5" -> "GRAY"
-        "rose-budsfeel-mk2" -> "BLACK"
-        "rose-cambrian" -> "BLUE"
-        else -> "GRAY"
-    }
+    private fun defaultProfileColorFor(profileId: String): String =
+        com.dohex.hyperrose.model.DeviceColorProfile.forDevice(profileId)
+            ?.defaultColor()?.name ?: "GRAY"
 
-    private fun resolveIslandImage(profileId: String, color: String, leftSide: Boolean): String? =
-        when (profileId) {
-            "rose-cambrian" -> when (color) {
-                "gray" -> "earphone_i5_gray_${if (leftSide) "left" else "right"}"
-                "black" -> "earphone_mk2_black_${if (leftSide) "left" else "right"}"
-                else -> "earphone_cambrian_blue"
-            }
-            "rose-earfree-i5" -> "earphone_i5_${color}_${if (leftSide) "left" else "right"}"
-            "rose-budsfeel-mk2" -> "earphone_mk2_${color}_${if (leftSide) "left" else "right"}"
-            else -> null
-        }
+    private fun resolveIslandImage(profileId: String, color: String, leftSide: Boolean): String? {
+        val profile = com.dohex.hyperrose.model.DeviceColorProfile.forDevice(profileId) ?: return null
+        val parsedColor = runCatching {
+            com.dohex.hyperrose.model.EarphoneColor.valueOf(color.uppercase())
+        }.getOrNull() ?: profile.defaultColor()
+        return profile.islandImageNameFor(parsedColor, leftSide)
+    }
 
     private fun broadcastFocusIslandWithColor(battery: TwsBatteryState, colorName: String) {
         val device = _connectedDevice.value ?: return

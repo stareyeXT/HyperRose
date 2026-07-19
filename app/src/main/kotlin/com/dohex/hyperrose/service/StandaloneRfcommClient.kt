@@ -133,6 +133,8 @@ class StandaloneRfcommClient(
         runCatching { dataSocket?.close() }
         dataSocket = null
         handler.removeCallbacksAndMessages(null)
+        statusPoller.cancel()
+        connectCancelled = true
         _connectionState.value = ConnectionState.DISCONNECTED
         _battery.value = null
         _ancMode.value = null
@@ -342,21 +344,10 @@ class StandaloneRfcommClient(
 
     // ==================== Status polling ====================
 
-    private var pollScheduled = false
+    private val statusPoller = StatusPoller(profile, handler) { pkt, desc -> sendCommand(pkt, desc) }
 
     private fun queryAllStatus() {
-        profile.protocol.statusQuerySequence.forEachIndexed { index, query ->
-            handler.postDelayed({ sendCommand(query, "Query status") }, 120L * index)
-        }
-        if (!pollScheduled) {
-            pollScheduled = true
-            handler.postDelayed(object : Runnable {
-                override fun run() {
-                    sendCommand(profile.protocol.queryBattery, "Query battery")
-                    handler.postDelayed(this, 30_000L)
-                }
-            }, 30_000L)
-        }
+        statusPoller.queryAllStatus()
     }
 }
 

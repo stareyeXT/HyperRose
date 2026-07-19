@@ -98,6 +98,7 @@ class StandaloneGattClient(
 
     override fun disconnect() {
         handler.removeCallbacksAndMessages(null)
+        statusPoller.cancel()
         gatt?.disconnect()
         gatt?.close()
         gatt = null
@@ -325,22 +326,10 @@ class StandaloneGattClient(
         }
     }
 
+    private val statusPoller = StatusPoller(profile, handler) { pkt, desc -> sendCommand(pkt, desc) }
+
     private fun queryAllStatus() {
-        profile.protocol.statusQuerySequence.forEachIndexed { index, query ->
-            handler.postDelayed(
-                { sendCommand(query, "Query status") },
-                (profile.gattTiming?.statusQueryStepDelayMs ?: 100L) * index,
-            )
-        }
-        // 启动定期全量状态刷新
-        handler.postDelayed(
-            object : Runnable {
-                override fun run() {
-                    queryAllStatus()
-                }
-            },
-            profile.gattTiming?.statusRefreshIntervalMs ?: 20_000L,
-        )
+        statusPoller.queryAllStatus()
     }
 }
 

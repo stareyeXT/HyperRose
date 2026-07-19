@@ -40,7 +40,7 @@ class GattDeviceSession(
     }
 
     override fun disconnect() {
-        handler.removeCallbacksAndMessages(null)
+        cleanupSession()
         gatt?.disconnect()
         gatt?.close()
         gatt = null

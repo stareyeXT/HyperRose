@@ -18,6 +18,7 @@ import com.dohex.hyperrose.model.TwsBatteryState
 import com.dohex.hyperrose.model.withLastKnownCaseBattery
 import com.dohex.hyperrose.profile.DeviceProfile
 import com.dohex.hyperrose.profile.DeviceResponse
+import com.dohex.hyperrose.service.StatusPoller
 import io.github.libxposed.api.XposedModule
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -132,7 +133,7 @@ abstract class DeviceSession(
                 is DeviceResponse.Eq -> {
                     currentEq = result.mode
                     broadcastState(HyperRoseAction.EQ_CHANGED) {
-                        putExtra(HyperRoseAction.EXTRA_MODE, result.mode.name)
+                        putExtra(HyperRoseAction.EXTRA_EQ_MODE, result.mode.name)
                     }
                 }
 
@@ -157,30 +158,10 @@ abstract class DeviceSession(
         }
     }
 
-    private var pollScheduled = false
+    private val statusPoller = StatusPoller(profile, handler) { pkt, desc -> sendCommand(pkt, desc) }
 
     protected fun queryAllStatus() {
-        profile.protocol.statusQuerySequence.forEachIndexed { index, query ->
-            handler.postDelayed(
-                { sendCommand(query, "Query status") },
-                (profile.gattTiming?.statusQueryStepDelayMs ?: 100L) * index,
-            )
-        }
-        if (!pollScheduled) {
-            pollScheduled = true
-            handler.postDelayed(
-                object : Runnable {
-                    override fun run() {
-                        sendCommand(profile.protocol.queryBattery, "Query battery")
-                        handler.postDelayed(
-                            this,
-                            profile.gattTiming?.statusRefreshIntervalMs ?: 30_000L
-                        )
-                    }
-                },
-                profile.gattTiming?.statusRefreshIntervalMs ?: 30_000L,
-            )
-        }
+        statusPoller.queryAllStatus()
     }
 
     protected fun broadcastState(action: String, extras: Intent.() -> Unit) {
@@ -223,46 +204,53 @@ abstract class DeviceSession(
         }
     }
 
+    private var refreshReceiver: BroadcastReceiver? = null
     private var refreshReceiverRegistered = false
 
     protected fun registerRefreshReceiver() {
         if (refreshReceiverRegistered) return
         refreshReceiverRegistered = true
         val filter = IntentFilter().apply { addAction(HyperRoseAction.REFRESH_STATUS) }
-        context.registerReceiver(
-            object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context?, intent: Intent?) {
-                    if (intent?.action != HyperRoseAction.REFRESH_STATUS) return
-                    queryAllStatus()
-                    val device = connectedDevice ?: return
-                    listOf(
-                        HyperRoseAction.PACKAGE_APP,
-                        HyperRoseAction.PACKAGE_MI_BLUETOOTH,
-                        HyperRoseAction.PACKAGE_MILINK,
-                        HyperRoseAction.PACKAGE_BLUETOOTH,
-                    ).forEach { pkg ->
-                        context.sendBroadcast(
-                            Intent(HyperRoseAction.DEVICE_CONNECTED).apply {
-                                putExtra(HyperRoseAction.EXTRA_DEVICE, device)
-                                putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)
-                                currentAnc?.let { putExtra(HyperRoseAction.EXTRA_MODE, it.name) }
-                                currentEq?.let { putExtra(HyperRoseAction.EXTRA_EQ_MODE, it.name) }
-                                currentGameMode?.let { putExtra(HyperRoseAction.EXTRA_ENABLED, it) }
-                                currentBattery?.let { b ->
-                                    putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, b.left?.level ?: -1)
-                                    putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, b.right?.level ?: -1)
-                                    putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, b.caseBattery ?: -1)
-                                }
-                                setPackage(pkg)
-                                addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                            },
-                        )
-                    }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action != HyperRoseAction.REFRESH_STATUS) return
+                queryAllStatus()
+                val device = connectedDevice ?: return
+                listOf(
+                    HyperRoseAction.PACKAGE_APP,
+                    HyperRoseAction.PACKAGE_MI_BLUETOOTH,
+                    HyperRoseAction.PACKAGE_MILINK,
+                    HyperRoseAction.PACKAGE_BLUETOOTH,
+                ).forEach { pkg ->
+                    context.sendBroadcast(
+                        Intent(HyperRoseAction.DEVICE_CONNECTED).apply {
+                            putExtra(HyperRoseAction.EXTRA_DEVICE, device)
+                            putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)
+                            currentAnc?.let { putExtra(HyperRoseAction.EXTRA_MODE, it.name) }
+                            currentEq?.let { putExtra(HyperRoseAction.EXTRA_EQ_MODE, it.name) }
+                            currentGameMode?.let { putExtra(HyperRoseAction.EXTRA_ENABLED, it) }
+                            currentBattery?.let { b ->
+                                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, b.left?.level ?: -1)
+                                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, b.right?.level ?: -1)
+                                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, b.caseBattery ?: -1)
+                            }
+                            setPackage(pkg)
+                            addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                        },
+                    )
                 }
-            },
-            filter,
-            Context.RECEIVER_EXPORTED,
-        )
+            }
+        }
+        refreshReceiver = receiver
+        context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+    }
+
+    /** 子类 disconnect() 必须调用：注销广播接收器并取消轮询，避免在 Bluetooth 进程中泄漏。 */
+    protected fun cleanupSession() {
+        refreshReceiver?.let { runCatching { context.unregisterReceiver(it) } }
+        refreshReceiver = null
+        refreshReceiverRegistered = false
+        statusPoller.cancel()
     }
 
 
@@ -301,25 +289,14 @@ abstract class DeviceSession(
         isMono: Boolean,
         leftSide: Boolean,
     ): String? {
-        val color = (colorName ?: defaultColorFor(profileId)).lowercase()
-        return when (profileId) {
-            "rose-cambrian" -> when (color) {
-                "gray" -> "earphone_i5_gray_${if (leftSide) "left" else "right"}"
-                "black" -> "earphone_mk2_black_${if (leftSide) "left" else "right"}"
-                else -> "earphone_cambrian_blue"
-            }
-            "rose-earfree-i5" ->
-                "earphone_i5_${color}_${if (leftSide) "left" else "right"}"
-            "rose-budsfeel-mk2" ->
-                "earphone_mk2_${color}_${if (leftSide) "left" else "right"}"
-            else -> null
-        }
+        val profile = com.dohex.hyperrose.model.DeviceColorProfile.forDevice(profileId) ?: return null
+        val parsedColor = colorName?.let { name ->
+            runCatching { com.dohex.hyperrose.model.EarphoneColor.valueOf(name.uppercase()) }.getOrNull()
+        } ?: profile.defaultColor()
+        return profile.islandImageNameFor(parsedColor, leftSide)
     }
 
-    internal fun defaultColorFor(profileId: String): String = when (profileId) {
-        "rose-earfree-i5" -> "GRAY"
-        "rose-budsfeel-mk2" -> "BLACK"
-        "rose-cambrian" -> "BLUE"
-        else -> "GRAY"
-    }
+    internal fun defaultColorFor(profileId: String): String =
+        com.dohex.hyperrose.model.DeviceColorProfile.forDevice(profileId)?.defaultColor()?.name
+            ?: "GRAY"
 }

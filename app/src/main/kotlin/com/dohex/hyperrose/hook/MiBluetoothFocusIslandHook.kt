@@ -39,6 +39,7 @@ object MiBluetoothFocusIslandHook {
     private var lastIslandRightCharging = false
     private var lastLeftImageName: String? = null
     private var lastRightImageName: String? = null
+    private val iconCache = mutableMapOf<String, Icon?>()
 
     @SuppressLint("PrivateApi")
     fun init(
@@ -353,11 +354,21 @@ object MiBluetoothFocusIslandHook {
 
     private fun resolveIcon(drawableName: String?): Icon? {
         if (drawableName == null) return null
+        // 缓存：避免每个 ~20s 电池轮询都重新 decodeResource（运行在 MiBluetooth 主进程）
+        iconCache[drawableName]?.let { return it }
         val ctx = moduleContext ?: return null
         val resId = ctx.resources.getIdentifier(drawableName, "drawable", "com.dohex.hyperrose")
-        if (resId == 0) return null
-        val bitmap = BitmapFactory.decodeResource(ctx.resources, resId) ?: return null
-        return Icon.createWithBitmap(bitmap)
+        if (resId == 0) {
+            iconCache[drawableName] = null
+            return null
+        }
+        val bitmap = BitmapFactory.decodeResource(ctx.resources, resId) ?: run {
+            iconCache[drawableName] = null
+            return null
+        }
+        val icon = Icon.createWithBitmap(bitmap)
+        iconCache[drawableName] = icon
+        return icon
     }
 
     private fun cancelIsland(context: Context) {

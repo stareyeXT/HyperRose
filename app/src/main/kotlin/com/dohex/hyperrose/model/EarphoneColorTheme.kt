@@ -123,6 +123,35 @@ enum class DeviceColorProfile(
     fun defaultTheme(): DeviceColorTheme =
         themeFor(availableColors.first())!!
 
+    /**
+     * 设备在未选择颜色时的默认颜色 —— 替代各处散落的 when(profileId) 硬编码。
+     */
+    fun defaultColor(): EarphoneColor = when (deviceId) {
+        "rose-earfree-i5" -> EarphoneColor.GRAY
+        "rose-budsfeel-mk2" -> EarphoneColor.BLACK
+        "rose-cambrian" -> EarphoneColor.BLUE
+        else -> EarphoneColor.GRAY
+    }
+
+    /**
+     * 生成给 MiBluetooth 焦点岛用的图片资源名（字符串），替代两处重复的
+     * [hook/DeviceSession.resolveImageName] 和 [ui/state/DeviceControlStore.resolveIslandImage]。
+     */
+    fun islandImageNameFor(color: EarphoneColor, leftSide: Boolean): String? {
+        val side = if (leftSide) "left" else "right"
+        val colorName = color.name.lowercase()
+        return when (deviceId) {
+            "rose-cambrian" -> when (colorName) {
+                "gray" -> "earphone_i5_gray_$side"
+                "black" -> "earphone_mk2_black_$side"
+                else -> "earphone_cambrian_blue"
+            }
+            "rose-earfree-i5" -> "earphone_i5_${colorName}_$side"
+            "rose-budsfeel-mk2" -> "earphone_mk2_${colorName}_$side"
+            else -> null
+        }
+    }
+
     companion object {
         val DEFAULT_PROFILE: DeviceColorProfile = EARFREE_I5
 
