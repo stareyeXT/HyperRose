@@ -164,7 +164,7 @@ class DeviceControlStore(
                     if (!directActive && !directPending && device != null) {
                         val profile = profileId?.let {
                             com.dohex.hyperrose.profile.DeviceProfileRegistry.findById(it)
-                        } ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(device.name ?: "")
+                        } ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device)
                         _connectedDevice.value = device
                         connectedProfileId = profile?.id
                         _connectionState.value = DeviceConnectionState.CONNECTING
@@ -273,12 +273,11 @@ class DeviceControlStore(
         val preferred = withContext(Dispatchers.IO) {
             val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@withContext null
             adapter.bondedDevices.firstOrNull { device ->
-                val name = device.name ?: return@firstOrNull false
-                com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) != null
+                com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device) != null
             }
         } ?: return
         val profile =
-            com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(preferred.name ?: "")
+            com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(preferred)
         _deviceName.value = preferred.name ?: preferred.address
         _connectedDevice.value = preferred
         connectedProfileId = profile?.id
@@ -310,9 +309,8 @@ class DeviceControlStore(
             val items = withContext(Dispatchers.IO) {
                 val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@withContext emptyList()
                 adapter.bondedDevices.mapNotNull { device ->
-                    val name = device.name ?: device.alias ?: return@mapNotNull null
-                    if (com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) == null) return@mapNotNull null
-                    RoseDeviceItem(name = name, address = device.address)
+                    if (com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device) == null) return@mapNotNull null
+                    RoseDeviceItem(name = device.name ?: device.address ?: "", address = device.address)
                 }.sortedWith(
                     compareBy<RoseDeviceItem> {
                         com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(it.name)?.let { profile ->
@@ -334,7 +332,7 @@ class DeviceControlStore(
                 adapter.bondedDevices.firstOrNull { it.address == address }
             } ?: return@launch
             com.dohex.hyperrose.data.AuthorizedDeviceStore.add(appContext, address)
-            val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
+            val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(bonded)
             _deviceName.value = bonded.name ?: address
             _connectedDevice.value = bonded
             connectedProfileId = profile?.id
@@ -355,7 +353,7 @@ class DeviceControlStore(
                 val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@withContext null
                 adapter.bondedDevices.firstOrNull { it.address == address }
             } ?: return@launch
-            val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(bonded.name ?: "")
+            val profile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(bonded)
             _deviceName.value = bonded.name ?: address
             _connectedDevice.value = bonded
             connectedProfileId = profile?.id
@@ -829,7 +827,7 @@ class DeviceControlStore(
     private fun broadcastFocusIsland(battery: TwsBatteryState) {
         val device = _connectedDevice.value ?: return
         val pid = connectedProfileId
-            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(device.name ?: "")?.id
+            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device)?.id
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.id
         val isMono = battery.right == null && battery.caseBattery == null
         val color = defaultProfileColorFor(pid).lowercase()
@@ -868,7 +866,7 @@ class DeviceControlStore(
     private fun broadcastFocusIslandWithColor(battery: TwsBatteryState, colorName: String) {
         val device = _connectedDevice.value ?: return
         val pid = connectedProfileId
-            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(device.name ?: "")?.id
+            ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device)?.id
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.id
         val isMono = battery.right == null && battery.caseBattery == null
         val color = colorName.lowercase()

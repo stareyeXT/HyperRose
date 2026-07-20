@@ -502,7 +502,7 @@ object MiLinkProcessHook {
         val address = runCatching { device.address }.getOrNull()
         if (address != null && isRoseAddress(address)) return true
         val name = runCatching { device.name ?: device.alias }.getOrNull().orEmpty()
-        return com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) != null
+        return com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device) != null
     }
 
     private val knownAddresses = mutableSetOf<String>()

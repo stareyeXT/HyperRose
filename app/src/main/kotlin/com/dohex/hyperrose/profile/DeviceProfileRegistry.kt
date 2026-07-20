@@ -26,4 +26,12 @@ object DeviceProfileRegistry {
 
     fun findByGattServiceUuid(uuid: java.util.UUID): DeviceProfile? =
         profiles.firstOrNull { uuid == it.serviceUuid }
+
+    fun findByDevice(device: android.bluetooth.BluetoothDevice): DeviceProfile? {
+        device.uuids?.forEach { parcelUuid ->
+            findByGattServiceUuid(parcelUuid.uuid)?.let { return it }
+        }
+        val name = device.name ?: device.alias ?: return null
+        return findByName(name)
+    }
 }

@@ -133,8 +133,7 @@ object BluetoothProcessHook {
 
     @SuppressLint("MissingPermission")
     private fun isSupportedDevice(device: BluetoothDevice): Boolean {
-        val name = device.name ?: device.alias
-        if (name != null && DeviceProfileRegistry.findByName(name) != null) return true
+        if (DeviceProfileRegistry.findByDevice(device) != null) return true
         val address = device.address ?: return false
         return com.dohex.hyperrose.ipc.AuthorizedDeviceClient.isAuthorized(address)
     }
@@ -147,7 +146,7 @@ object BluetoothProcessHook {
     ) {
         val context = resolveContext(serviceObj) ?: return
 
-        val profile = (device.name ?: device.alias)?.let { DeviceProfileRegistry.findByName(it) }
+        val profile = DeviceProfileRegistry.findByDevice(device)
             ?: run {
                 module.log(Log.WARN, TAG, "No profile for ${device.name}")
                 return

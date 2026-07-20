@@ -1227,7 +1227,7 @@ object HeadsetServiceBinderHook {
         if (device == null) return false
         val address = runCatching { device.address }.getOrNull()
         val name = runCatching { device.name ?: device.alias }.getOrNull().orEmpty()
-        val nameMatch = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByName(name) != null
+        val nameMatch = com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device) != null
         val addrMatch = address != null && isRoseAddress(address)
         val result = nameMatch || addrMatch
         moduleLog("isRoseEarphone: name='$name' addr=$address nameMatch=$nameMatch addrMatch=$addrMatch known=$knownAddresses → $result")
