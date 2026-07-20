@@ -21,6 +21,7 @@ import com.dohex.hyperrose.model.TransparencyLevel
 import com.dohex.hyperrose.model.TwsBatteryState
 import com.dohex.hyperrose.model.withLastKnownCaseBattery
 import com.dohex.hyperrose.profile.DeviceProfile
+import com.dohex.hyperrose.profile.DeviceProfileRegistry
 import com.dohex.hyperrose.profile.DeviceResponse
 import com.dohex.hyperrose.profile.TransportSpec
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -77,6 +78,9 @@ class StandaloneGattClient(
 
     private val _deviceName = MutableStateFlow<String?>(null)
     val deviceName: StateFlow<String?> = _deviceName.asStateFlow()
+
+    private val _profileMatchResult = MutableStateFlow<ProfileMatchResult?>(null)
+    val profileMatchResult: StateFlow<ProfileMatchResult?> = _profileMatchResult.asStateFlow()
 
     private var gatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
@@ -258,6 +262,17 @@ class StandaloneGattClient(
                     { queryAllStatus() },
                     profile.gattTiming?.initialStatusQueryDelayMs ?: 120L
                 )
+
+                // Verify profile via GATT service UUIDs
+                val discoveredUuids = gatt.services.map { it.uuid }
+                for (svcUuid in discoveredUuids) {
+                    val matchedProfile = DeviceProfileRegistry.findByGattServiceUuid(svcUuid)
+                    if (matchedProfile != null && matchedProfile.id != profile.id) {
+                        Log.i(TAG, "GATT service UUID $svcUuid matches ${matchedProfile.id} (current: ${profile.id}), correcting")
+                        _profileMatchResult.value = ProfileMatchResult(matchedProfile.id)
+                        break
+                    }
+                }
             }
 
             override fun onCharacteristicChanged(
@@ -332,5 +347,7 @@ class StandaloneGattClient(
         statusPoller.queryAllStatus()
     }
 }
+
+data class ProfileMatchResult(val actualProfileId: String)
 
 private fun ByteArray.toHexString(): String = joinToString(" ") { "%02X".format(it) }

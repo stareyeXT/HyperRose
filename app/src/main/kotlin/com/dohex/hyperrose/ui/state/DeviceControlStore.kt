@@ -636,6 +636,18 @@ class DeviceControlStore(
             }
         }.launchIn(scope)
 
+        directGattClient.profileMatchResult.onEach { result ->
+            if (result == null || result.actualProfileId == connectedProfileId) return@onEach
+            val device = _connectedDevice.value ?: return@onEach
+            val newProfile = com.dohex.hyperrose.profile.DeviceProfileRegistry.findById(result.actualProfileId)
+            connectedProfileId = result.actualProfileId
+            _capabilities.value = newProfile?.capabilities
+                ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.capabilities
+            newProfile?.let { _deviceName.value = it.displayName }
+            directGattClient.disconnect()
+            attemptDirectConnect(device, newProfile)
+        }.launchIn(scope)
+
         directGattClient.ancMode.onEach {
             if (it != null) {
                 _ancMode.value = it

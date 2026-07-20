@@ -100,6 +100,9 @@ interface DeviceProfile {
     val protocol: DeviceProtocol
     val capabilities: DeviceCapabilities
 
+    /** BLE GATT service UUID (non-GATT profiles return null). */
+    val serviceUuid: UUID? get() = (transport as? TransportSpec.Gatt)?.serviceUuid
+
     /** 仅 GATT 传输时有意义；RFCOMM 返回 null */
     val gattTiming: GattTiming? get() = null
 

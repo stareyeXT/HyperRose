@@ -23,4 +23,7 @@ object DeviceProfileRegistry {
     /** Find profile by its [DeviceProfile.id]. */
     fun findById(id: String): DeviceProfile? =
         profiles.firstOrNull { it.id == id }
+
+    fun findByGattServiceUuid(uuid: java.util.UUID): DeviceProfile? =
+        profiles.firstOrNull { uuid == it.serviceUuid }
 }
