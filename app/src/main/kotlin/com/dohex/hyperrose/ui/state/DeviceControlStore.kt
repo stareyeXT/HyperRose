@@ -18,6 +18,8 @@ import com.dohex.hyperrose.model.EqPreset
 import com.dohex.hyperrose.model.TransparencyLevel
 import com.dohex.hyperrose.model.TwsBatteryState
 import com.dohex.hyperrose.model.asBatteryLevelOrNull
+import com.dohex.hyperrose.model.isSingleValue
+import com.dohex.hyperrose.model.singleDisplayValue
 import com.dohex.hyperrose.model.withLastKnownCaseBattery
 import com.dohex.hyperrose.profile.TransportSpec
 import com.dohex.hyperrose.service.StandaloneClient
@@ -420,11 +422,18 @@ class DeviceControlStore(
         directRetryCount = 0
     }
 
-    /** 直连彻底失败后回退到桥接模式（若桥接可用会由 hook 广播补齐状态）。 */
+    /** 直连彻底失败后放弃 App 直连。真实桥接连接只由 hook 的 DEVICE_CONNECTED 广播补齐，
+     *  不在此伪造已连接态——否则耳机未连接时 App 会显示虚假的"已连接/LSPosed 桥接模式"。 */
     private fun fallbackToBridge() {
         clearDirectRetry()
-        _transport.value = ConnectionTransport.HOOK_BRIDGE
-        _connectionState.value = DeviceConnectionState.CONNECTED
+        if (_transport.value == ConnectionTransport.HOOK_BRIDGE &&
+            _connectionState.value == DeviceConnectionState.CONNECTED
+        ) {
+            // 桥接会话已由 hook 建立，保持现状。
+            return
+        }
+        _transport.value = ConnectionTransport.NONE
+        _connectionState.value = DeviceConnectionState.DISCONNECTED
         _connectedDevice.value = null
         connectedProfileId = null
     }
@@ -642,6 +651,7 @@ class DeviceControlStore(
                     putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
                     putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
                     putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+                    putExtra(HyperRoseAction.EXTRA_OVERALL_LEVEL, it.overall ?: -1)
                 }
                 broadcastFocusIsland(it)
             }
@@ -760,6 +770,7 @@ class DeviceControlStore(
                     putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, it.left?.isCharging ?: false)
                     putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, it.right?.isCharging ?: false)
                     putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, it.caseBattery ?: -1)
+                    putExtra(HyperRoseAction.EXTRA_OVERALL_LEVEL, it.overall ?: -1)
                 }
                 broadcastFocusIsland(it)
             }
@@ -842,7 +853,7 @@ class DeviceControlStore(
         val pid = connectedProfileId
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device)?.id
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.id
-        val isMono = battery.right == null && battery.caseBattery == null
+        val isMono = battery.isSingleValue()
         val color = defaultProfileColorFor(pid).lowercase()
         val leftImage = resolveIslandImage(pid, color, leftSide = true)
         val rightImage = if (isMono) null else resolveIslandImage(pid, color, leftSide = false)
@@ -854,7 +865,7 @@ class DeviceControlStore(
                 putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, if (isMono) -1 else (battery.right?.level ?: -1))
                 putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, battery.left?.isCharging ?: false)
                 putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, battery.right?.isCharging ?: false)
-                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
+                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.singleDisplayValue() ?: -1) else (battery.caseBattery ?: -1))
                 putExtra(HyperRoseAction.EXTRA_DEVICE, device)
                 putExtra(HyperRoseAction.EXTRA_PROFILE_ID, pid)
                 putExtra(HyperRoseAction.EXTRA_COLOR, color)
@@ -881,7 +892,7 @@ class DeviceControlStore(
         val pid = connectedProfileId
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device)?.id
             ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.id
-        val isMono = battery.right == null && battery.caseBattery == null
+        val isMono = battery.isSingleValue()
         val color = colorName.lowercase()
         val leftImage = resolveIslandImage(pid, color, leftSide = true)
         val rightImage = if (isMono) null else resolveIslandImage(pid, color, leftSide = false)
@@ -893,7 +904,7 @@ class DeviceControlStore(
                 putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, if (isMono) -1 else (battery.right?.level ?: -1))
                 putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, battery.left?.isCharging ?: false)
                 putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, battery.right?.isCharging ?: false)
-                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
+                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.singleDisplayValue() ?: -1) else (battery.caseBattery ?: -1))
                 putExtra(HyperRoseAction.EXTRA_DEVICE, device)
                 putExtra(HyperRoseAction.EXTRA_PROFILE_ID, pid)
                 putExtra(HyperRoseAction.EXTRA_COLOR, color)
