@@ -847,6 +847,10 @@ object HeadsetServiceBinderHook {
         val rightLevel = rightLevelRaw.asBatteryLevelOrNull()
         val caseLevel = caseLevelRaw.asBatteryLevelOrNull()
 
+        val overallLevel =
+            getIntExtra(HyperRoseAction.EXTRA_OVERALL_LEVEL, -1).asBatteryLevelOrNull()
+        if (overallLevel != null) return TwsBatteryState(overall = overallLevel)
+
         if (leftLevel == null && rightLevel == null && caseLevel == null) return null
 
         return TwsBatteryState(
