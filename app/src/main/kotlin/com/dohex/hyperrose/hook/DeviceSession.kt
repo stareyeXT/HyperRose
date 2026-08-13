@@ -15,6 +15,8 @@ import com.dohex.hyperrose.model.EqPreset
 import com.dohex.hyperrose.model.TransparencyLevel
 import com.dohex.hyperrose.model.TwsBatteryState
 import com.dohex.hyperrose.model.inChargingCase
+import com.dohex.hyperrose.model.isSingleValue
+import com.dohex.hyperrose.model.singleDisplayValue
 import com.dohex.hyperrose.model.withLastKnownCaseBattery
 import com.dohex.hyperrose.profile.DeviceProfile
 import com.dohex.hyperrose.profile.DeviceResponse
@@ -80,13 +82,14 @@ abstract class DeviceSession(
                             battery.right?.isCharging ?: false
                         )
                         putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, battery.caseBattery ?: -1)
+                        putExtra(HyperRoseAction.EXTRA_OVERALL_LEVEL, battery.overall ?: -1)
                         putExtra(HyperRoseAction.EXTRA_DEVICE, connectedDevice)
                     }
                     context.sendHyperRoseBroadcast(
                         Intent(HyperRoseAction.SHOW_ISLAND).apply {
                             setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
                             addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                            val isMono = battery.right == null && battery.caseBattery == null
+                            val isMono = battery.isSingleValue()
                             putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, if (isMono) -1 else (battery.left?.level ?: -1))
                             putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, if (isMono) -1 else (battery.right?.level ?: -1))
                             putExtra(
@@ -97,7 +100,7 @@ abstract class DeviceSession(
                                 HyperRoseAction.EXTRA_RIGHT_CHARGING,
                                 battery.right?.isCharging ?: false
                             )
-                            putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
+                            putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.singleDisplayValue() ?: -1) else (battery.caseBattery ?: -1))
                             putExtra(HyperRoseAction.EXTRA_DEVICE, connectedDevice)
                             putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)
                             val colorName = BluetoothProcessHook.getDeviceColor(connectedAddress)
@@ -230,6 +233,7 @@ abstract class DeviceSession(
                         putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, b.left?.level ?: -1)
                         putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, b.right?.level ?: -1)
                         putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, b.caseBattery ?: -1)
+                        b.overall?.let { putExtra(HyperRoseAction.EXTRA_OVERALL_LEVEL, it) }
                     }
                     setPackage(pkg)
                     addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
