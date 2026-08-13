@@ -14,3 +14,4 @@ local.properties
 Thumbs.db
 
 release-signing/
+.superpowers/
