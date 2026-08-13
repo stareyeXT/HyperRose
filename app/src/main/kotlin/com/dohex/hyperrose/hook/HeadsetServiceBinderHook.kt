@@ -17,6 +17,7 @@ import com.dohex.hyperrose.model.EarBatteryState
 import com.dohex.hyperrose.model.TransparencyLevel
 import com.dohex.hyperrose.model.TwsBatteryState
 import com.dohex.hyperrose.model.asBatteryLevelOrNull
+import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.util.ReflectionHelper
 import io.github.libxposed.api.XposedModule
 import java.lang.reflect.Method
@@ -759,6 +760,12 @@ object HeadsetServiceBinderHook {
         context?.registerReceiver(
             object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context, intent: Intent) {
+                    if (!com.dohex.hyperrose.ipc.BroadcastSenderValidator.isAllowed(
+                            ctx.packageManager,
+                            sentFromUid,
+                            setOf(HyperRoseAction.PACKAGE_BLUETOOTH),
+                        )
+                    ) return
                     when (intent.action) {
                         HyperRoseAction.DEVICE_CONNECTED -> {
                             currentDevice = intent.getParcelableExtra(HyperRoseAction.EXTRA_DEVICE)
@@ -815,7 +822,7 @@ object HeadsetServiceBinderHook {
         moduleLog("State receiver registered")
 
         // 请求 GATT 客户端立即广播当前状态（和 OppoPods 的 ACTION_REFRESH_STATUS 一样）
-        context?.sendBroadcast(
+        context?.sendHyperRoseBroadcast(
             Intent(HyperRoseAction.REFRESH_STATUS).apply {
                 `package` = HyperRoseAction.PACKAGE_BLUETOOTH
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -1074,7 +1081,7 @@ object HeadsetServiceBinderHook {
             pendingAncMode = mode
             moduleLog("GATT client null, caching ANC=$mode for retry (pendingRetryCount=$pendingRetryCount)")
             val ctx = context ?: return
-            ctx.sendBroadcast(
+            ctx.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.ANC_SELECT).apply {
                     putExtra(HyperRoseAction.EXTRA_MODE, mode.name)
                     `package` = HyperRoseAction.PACKAGE_BLUETOOTH
@@ -1104,7 +1111,7 @@ object HeadsetServiceBinderHook {
             pendingAncDepth = depth
             moduleLog("GATT client null, caching ANC depth=$depth for retry")
             val ctx = context ?: return
-            ctx.sendBroadcast(
+            ctx.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.SET_ANC_DEPTH).apply {
                     putExtra(HyperRoseAction.EXTRA_DEPTH, depth.name)
                     `package` = HyperRoseAction.PACKAGE_BLUETOOTH
@@ -1132,7 +1139,7 @@ object HeadsetServiceBinderHook {
             pendingTransLevel = level
             moduleLog("GATT client null, caching trans level=$level for retry")
             val ctx = context ?: return
-            ctx.sendBroadcast(
+            ctx.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.SET_TRANS_LEVEL).apply {
                     putExtra(HyperRoseAction.EXTRA_LEVEL, level.name)
                     `package` = HyperRoseAction.PACKAGE_BLUETOOTH
@@ -1163,7 +1170,7 @@ object HeadsetServiceBinderHook {
                 gatt.sendCommand(gatt.profile.protocol.ancCommand(mode))
                 moduleLog("replay direct: ANC $mode")
             } else {
-                ctx.sendBroadcast(
+                ctx.sendHyperRoseBroadcast(
                     Intent(HyperRoseAction.ANC_SELECT).apply {
                         putExtra(HyperRoseAction.EXTRA_MODE, mode.name)
                         `package` = HyperRoseAction.PACKAGE_BLUETOOTH
@@ -1179,7 +1186,7 @@ object HeadsetServiceBinderHook {
                 gatt.sendCommand(gatt.profile.protocol.ancDepthCommand(depth))
                 moduleLog("replay direct: ANC depth $depth")
             } else {
-                ctx.sendBroadcast(
+                ctx.sendHyperRoseBroadcast(
                     Intent(HyperRoseAction.SET_ANC_DEPTH).apply {
                         putExtra(HyperRoseAction.EXTRA_DEPTH, depth.name)
                         `package` = HyperRoseAction.PACKAGE_BLUETOOTH
@@ -1195,7 +1202,7 @@ object HeadsetServiceBinderHook {
                 gatt.sendCommand(gatt.profile.protocol.transLevelCommand(level))
                 moduleLog("replay direct: trans level $level")
             } else {
-                ctx.sendBroadcast(
+                ctx.sendHyperRoseBroadcast(
                     Intent(HyperRoseAction.SET_TRANS_LEVEL).apply {
                         putExtra(HyperRoseAction.EXTRA_LEVEL, level.name)
                         `package` = HyperRoseAction.PACKAGE_BLUETOOTH
@@ -1212,7 +1219,7 @@ object HeadsetServiceBinderHook {
     /** 触发 GATT 客户端查询耳机状态（和 OppoPods 的 ACTION_REFRESH_STATUS 一样） */
     private fun requestStatusRefresh(reason: String) {
         val ctx = context ?: return
-        ctx.sendBroadcast(
+        ctx.sendHyperRoseBroadcast(
             Intent(HyperRoseAction.REFRESH_STATUS).apply {
                 `package` = HyperRoseAction.PACKAGE_BLUETOOTH
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)

@@ -28,6 +28,12 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Run lint
+        run: ./gradlew :app:lintDebug --no-daemon
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
 

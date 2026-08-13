@@ -13,6 +13,8 @@ import com.dohex.hyperrose.model.AncDepth
 import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.EqPreset
 import com.dohex.hyperrose.model.TransparencyLevel
+import com.dohex.hyperrose.ipc.BroadcastSenderValidator
+import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.profile.DeviceProfileRegistry
 import com.dohex.hyperrose.util.ReflectionHelper
 import io.github.libxposed.api.XposedModule
@@ -37,6 +39,12 @@ object BluetoothProcessHook {
     internal fun getDeviceColor(address: String?): String? = address?.let { deviceColorMap[it] }
 
     private var commandReceiverRegistered = false
+    private val trustedCommandSenders =
+        setOf(
+            HyperRoseAction.PACKAGE_APP,
+            HyperRoseAction.PACKAGE_BLUETOOTH,
+            HyperRoseAction.PACKAGE_MILINK,
+        )
 
     @SuppressLint("PrivateApi")
     fun init(
@@ -167,28 +175,6 @@ object BluetoothProcessHook {
         // Set session immediately so commands can be queued during async connect
         session = newSession
         newSession.connect(device)
-
-        // RfcommDeviceSession.connect() runs async; broadcastDeviceConnected() will send
-        // DEVICE_CONNECTED once RFCOMM is established.
-        // For Gatt sessions, connect() is also async (connectGatt).
-        // The broadcast with initial state is handled inside each session's connect flow.
-
-        // 广播连接事件（给 App、MiBluetooth、MiLink、蓝牙进程 binder hook）
-        listOf(
-            HyperRoseAction.PACKAGE_APP,
-            HyperRoseAction.PACKAGE_MI_BLUETOOTH,
-            HyperRoseAction.PACKAGE_MILINK,
-            HyperRoseAction.PACKAGE_BLUETOOTH,
-        ).forEach { pkg ->
-            context.sendBroadcast(
-                Intent(HyperRoseAction.DEVICE_CONNECTED).apply {
-                    putExtra(HyperRoseAction.EXTRA_DEVICE, device)
-                    putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)
-                    setPackage(pkg)
-                    addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                },
-            )
-        }
     }
 
     private fun onDeviceDisconnected(
@@ -196,8 +182,18 @@ object BluetoothProcessHook {
         serviceObj: Any,
         device: BluetoothDevice,
     ) {
-        // 断开 GATT
-        session?.disconnect()
+        val currentSession = session
+        val currentAddress = currentSession?.connectedAddress
+        if (currentAddress != null && currentAddress != device.address) {
+            module.log(
+                Log.DEBUG,
+                TAG,
+                "Ignoring stale disconnect for ${device.address}; current=$currentAddress",
+            )
+            return
+        }
+
+        currentSession?.disconnect()
         session = null
 
         val context = resolveContext(serviceObj) ?: return
@@ -209,7 +205,7 @@ object BluetoothProcessHook {
             HyperRoseAction.PACKAGE_MILINK,
             HyperRoseAction.PACKAGE_BLUETOOTH,
         ).forEach { pkg ->
-            context.sendBroadcast(
+            context.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.DEVICE_DISCONNECTED).apply {
                     putExtra(HyperRoseAction.EXTRA_DEVICE, device)
                     setPackage(pkg)
@@ -287,6 +283,10 @@ object BluetoothProcessHook {
                     ctx: Context,
                     intent: Intent,
                 ) {
+                    if (!BroadcastSenderValidator.isAllowed(ctx.packageManager, sentFromUid, trustedCommandSenders)) {
+                        module.log(Log.WARN, TAG, "Rejected command broadcast from uid=$sentFromUid")
+                        return
+                    }
                     // --- actions that don't require an active session ---
                     when (intent.action) {
                         HyperRoseAction.BLE_LOG_CONNECT -> {
@@ -318,7 +318,7 @@ object BluetoothProcessHook {
                                     val resolvedColor = deviceColorMap[address]
                                     val leftImage = s.resolveImageName(s.profile.id, resolvedColor, isMono, true)
                                     val rightImage = if (isMono) null else s.resolveImageName(s.profile.id, resolvedColor, isMono, false)
-                                    context.sendBroadcast(
+                                    context.sendHyperRoseBroadcast(
                                         Intent(HyperRoseAction.SHOW_ISLAND).apply {
                                             setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
                                             addFlags(Intent.FLAG_RECEIVER_FOREGROUND)

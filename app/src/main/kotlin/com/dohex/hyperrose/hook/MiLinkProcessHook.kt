@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
 import com.dohex.hyperrose.ipc.QuickControlIntentFactory
+import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.util.ReflectionHelper
 import io.github.libxposed.api.XposedModule
@@ -292,6 +293,12 @@ object MiLinkProcessHook {
         context?.registerReceiver(
             object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context, intent: Intent) {
+                    if (!com.dohex.hyperrose.ipc.BroadcastSenderValidator.isAllowed(
+                            ctx.packageManager,
+                            sentFromUid,
+                            setOf(HyperRoseAction.PACKAGE_APP, HyperRoseAction.PACKAGE_BLUETOOTH),
+                        )
+                    ) return
                     when (intent.action) {
                         HyperRoseAction.DEVICE_CONNECTED -> {
                             currentAddress =
@@ -346,7 +353,7 @@ object MiLinkProcessHook {
         receiverRegistered = true
 
         // 请求 Bluetooth 进程刷新状态（跨进程广播，必须带 FLAG_RECEIVER_FOREGROUND）
-        context?.sendBroadcast(
+        context?.sendHyperRoseBroadcast(
             Intent(HyperRoseAction.REFRESH_STATUS).apply {
                 setPackage(HyperRoseAction.PACKAGE_BLUETOOTH)
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -619,7 +626,7 @@ object MiLinkProcessHook {
             HyperRoseAction.PACKAGE_MILINK,
             HyperRoseAction.PACKAGE_APP,
         ).forEach { pkg ->
-            ctx.sendBroadcast(
+            ctx.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.ANC_CHANGED).apply {
                     putExtra(HyperRoseAction.EXTRA_MODE, modeName)
                     setPackage(pkg)
@@ -647,7 +654,7 @@ object MiLinkProcessHook {
 
         // Send to app first (DIRECT_RFCOMM if available)
         try {
-            ctx.sendBroadcast(
+            ctx.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.ANC_SELECT).apply {
                     putExtra(HyperRoseAction.EXTRA_MODE, modeName)
                     setPackage(HyperRoseAction.PACKAGE_APP)
@@ -658,7 +665,7 @@ object MiLinkProcessHook {
 
         // Fallback: send to Bluetooth process
         try {
-            ctx.sendBroadcast(
+            ctx.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.ANC_SELECT).apply {
                     putExtra(HyperRoseAction.EXTRA_MODE, modeName)
                     setPackage(HyperRoseAction.PACKAGE_BLUETOOTH)

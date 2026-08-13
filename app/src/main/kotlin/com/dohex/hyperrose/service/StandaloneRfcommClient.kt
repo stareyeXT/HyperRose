@@ -15,6 +15,7 @@ import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.EqPreset
 import com.dohex.hyperrose.model.TransparencyLevel
 import com.dohex.hyperrose.model.TwsBatteryState
+import com.dohex.hyperrose.model.inChargingCase
 import com.dohex.hyperrose.model.withLastKnownCaseBattery
 import com.dohex.hyperrose.profile.DeviceProfile
 import com.dohex.hyperrose.profile.DeviceResponse
@@ -23,9 +24,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.IOException
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 /** App-process RFCOMM client for devices using Bluetooth Classic (e.g. BudsFeel MK2).
  *  All state exposed via StateFlow for Compose UI consumption. */
@@ -35,7 +37,7 @@ class StandaloneRfcommClient(
 ) : StandaloneClient {
     companion object {
         private const val TAG = "HyperRose.StandaloneRfcommClient"
-        private val logTimeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+        private val logTimeFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.US)
     }
 
     enum class ConnectionState {
@@ -84,37 +86,42 @@ class StandaloneRfcommClient(
     @Volatile
     private var running = false
 
-    @Volatile
-    private var connectCancelled = false
+    private val connectionGeneration = AtomicInteger()
     private val handler = Handler(Looper.getMainLooper())
 
     override fun connect(device: BluetoothDevice) {
         _deviceName.value = device.name
         _connectionState.value = ConnectionState.CONNECTING
         Log.i(TAG, "Connecting to ${device.address} via RFCOMM")
-        connectCancelled = false
+        val generation = connectionGeneration.incrementAndGet()
 
         Thread {
             try {
                 val socket = device.createRfcommSocketToServiceRecord(rfcommSpec.dataChannelUuid)
                 socket.connect()
-                if (connectCancelled) {
+                if (generation != connectionGeneration.get()) {
                     Log.i(TAG, "RFCOMM connect cancelled after socket opened")
                     runCatching { socket.close() }
                     return@Thread
                 }
                 dataSocket = socket
                 handler.post {
+                    if (generation != connectionGeneration.get() || dataSocket !== socket) {
+                        runCatching { socket.close() }
+                        return@post
+                    }
                     _connectionState.value = ConnectionState.CONNECTED
                     Log.i(TAG, "RFCOMM connected")
-                    startReader()
+                    startReader(socket)
                     flushPendingCommands()
                     queryAllStatus()
                 }
             } catch (e: IOException) {
+                if (generation != connectionGeneration.get()) return@Thread
                 Log.e(TAG, "RFCOMM connect failed", e)
-                pendingCommands.clear()
                 handler.post {
+                    if (generation != connectionGeneration.get()) return@post
+                    pendingCommands.clear()
                     _connectionState.value = ConnectionState.DISCONNECTED
                 }
             }
@@ -126,7 +133,7 @@ class StandaloneRfcommClient(
     }
 
     override fun disconnect() {
-        connectCancelled = true
+        connectionGeneration.incrementAndGet()
         running = false
         readerThread?.interrupt()
         readerThread = null
@@ -134,7 +141,6 @@ class StandaloneRfcommClient(
         dataSocket = null
         handler.removeCallbacksAndMessages(null)
         statusPoller.cancel()
-        connectCancelled = true
         _connectionState.value = ConnectionState.DISCONNECTED
         _battery.value = null
         _ancMode.value = null
@@ -161,7 +167,7 @@ class StandaloneRfcommClient(
             socket.outputStream.write(packet)
             if (isBleLogEnabled()) {
                 val hex = packet.toHexString()
-                BleLog.log("App", "TX", hex, description, logTimeFormat.format(Date()))
+                BleLog.log("App", "TX", hex, description, LocalTime.now().format(logTimeFormat))
             }
         } catch (e: IOException) {
             Log.e(TAG, "RFCOMM send failed", e)
@@ -226,15 +232,15 @@ class StandaloneRfcommClient(
 
     // ==================== Reader thread ====================
 
-    private fun startReader() {
+    private fun startReader(socket: BluetoothSocket) {
         running = true
         readerThread = Thread {
             val buf = ByteArray(512)
             val frameBuf = ByteArray(2048)
             var frameLen = 0
-            val input = dataSocket!!.inputStream
+            val input = socket.inputStream
 
-            while (running) {
+            while (running && dataSocket === socket) {
                 try {
                     val n = input.read(buf)
                     if (n < 0) break
@@ -269,8 +275,10 @@ class StandaloneRfcommClient(
             }
 
             // Unexpected disconnect
-            if (running) {
-                handler.post { disconnect() }
+            if (running && dataSocket === socket) {
+                handler.post {
+                    if (dataSocket === socket) disconnect()
+                }
             }
         }.apply {
             name = "RfcommReader"
@@ -303,12 +311,13 @@ class StandaloneRfcommClient(
         val results = profile.protocol.parseResponse(data)
         if (isBleLogEnabled()) {
             val hex = data.toHexString()
-            BleLog.log("App", "RX", hex, results.toString(), logTimeFormat.format(Date()))
+            BleLog.log("App", "RX", hex, results.toString(), LocalTime.now().format(logTimeFormat))
         }
         for (result in results) {
             when (result) {
                 is DeviceResponse.Battery -> {
                     _battery.value = result.info.withLastKnownCaseBattery(_battery.value)
+                    if (result.info.inChargingCase()) statusPoller.pause() else statusPoller.resume()
                 }
 
                 is DeviceResponse.Anc -> {

@@ -16,6 +16,7 @@ object AuthorizedDeviceClient {
 
     private val authorizedAddresses = mutableSetOf<String>()
     private var receiverRegistered = false
+    private val trustedSenders = setOf(HyperRoseIpc.PACKAGE_APP)
 
     /** 加载白名单（首次调用时从 ContentProvider 查询） */
     fun ensureLoaded(context: Context) {
@@ -57,6 +58,7 @@ object AuthorizedDeviceClient {
         context.registerReceiver(
             object : BroadcastReceiver() {
                 override fun onReceive(ctx: Context, intent: Intent) {
+                    if (!BroadcastSenderValidator.isAllowed(ctx.packageManager, sentFromUid, trustedSenders)) return
                     reload(ctx)
                 }
             },

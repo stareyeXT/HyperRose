@@ -3,6 +3,7 @@ package com.dohex.hyperrose.profile.budsfeel_lite
 import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.EarBatteryState
 import com.dohex.hyperrose.model.TwsBatteryState
+import com.dohex.hyperrose.model.asBatteryLevelOrNull
 import com.dohex.hyperrose.profile.DeviceResponse
 
 object BudsFeelLiteResponseParser {
@@ -30,24 +31,29 @@ object BudsFeelLiteResponseParser {
         val end = data.size - 2
         while (i < end - 1) {
             val len = data[i].toInt() and 0xFF
-            if (len < 2 || i + len > end) { i++; continue }
+            if (len < 2 || i + len >= end) { i++; continue }
 
             val ptype = data[i + 1].toInt() and 0xFF
             when (ptype) {
                 0x09 -> {
                     val v = data[i + 2].toInt() and 0xFF
-                    results.add(DeviceResponse.Anc(parseAncMode(v)))
+                    results.add(parseAncValue(v))
                 }
                 0x0E -> {
                     results.add(DeviceResponse.GameMode(data[i + 2].toInt() == 0x01))
                 }
                 0x0C -> {
-                    if (i + 4 < end) {
-                        results.add(DeviceResponse.Battery(TwsBatteryState(
-                            left = EarBatteryState(data[i + 2].toInt() and 0xFF, false),
-                            right = EarBatteryState(data[i + 3].toInt() and 0xFF, false),
-                            caseBattery = data[i + 4].toInt() and 0xFF,
-                        )))
+                    if (len >= 4 && i + 4 < end) {
+                        val left = (data[i + 2].toInt() and 0xFF).asBatteryLevelOrNull()
+                        val right = (data[i + 3].toInt() and 0xFF).asBatteryLevelOrNull()
+                        val caseLevel = (data[i + 4].toInt() and 0xFF).asBatteryLevelOrNull()
+                        if (left != null || right != null || caseLevel != null) {
+                            results.add(DeviceResponse.Battery(TwsBatteryState(
+                                left = left?.let { EarBatteryState(it, false) },
+                                right = right?.let { EarBatteryState(it, false) },
+                                caseBattery = caseLevel,
+                            )))
+                        }
                     }
                 }
             }
@@ -61,17 +67,17 @@ object BudsFeelLiteResponseParser {
         val ptype = data[3].toInt() and 0xFF
         val value = data[4].toInt() and 0xFF
         return when (ptype) {
-            0x09 -> DeviceResponse.Anc(parseAncMode(value))
+            0x09 -> parseAncValue(value)
             0x0E -> DeviceResponse.GameMode(value == 0x01)
             else -> DeviceResponse.Unknown
         }
     }
 
-    private fun parseAncMode(value: Int): AncMode = when (value) {
-        0x01 -> AncMode.NOISE_CANCEL
-        0x02 -> AncMode.NORMAL
-        0x03 -> AncMode.TRANSPARENT
-        0x04 -> AncMode.WIND_NOISE
-        else -> AncMode.NORMAL
+    private fun parseAncValue(value: Int): DeviceResponse = when (value) {
+        0x01 -> DeviceResponse.Anc(AncMode.NOISE_CANCEL)
+        0x02 -> DeviceResponse.Anc(AncMode.NORMAL)
+        0x03 -> DeviceResponse.Anc(AncMode.TRANSPARENT)
+        0x04 -> DeviceResponse.Anc(AncMode.WIND_NOISE)
+        else -> DeviceResponse.Unknown
     }
 }

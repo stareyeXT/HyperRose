@@ -3,10 +3,31 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
-val releaseKeystoreFile: String? = System.getenv("ANDROID_KEYSTORE_FILE")
-val releaseKeystorePassword: String? = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-val releaseKeyAlias: String? = System.getenv("ANDROID_KEY_ALIAS")
-val releaseKeyPassword: String? = System.getenv("ANDROID_KEY_PASSWORD")
+val localSigningFile =
+    listOf(
+        rootProject.file("release-signing/keystore-password.txt"),
+        file("C:/daima/release-signing/keystore-password.txt"),
+    ).firstOrNull { it.isFile }
+        ?: rootProject.file("release-signing/keystore-password.txt")
+val localSigning =
+    if (localSigningFile.isFile) {
+        localSigningFile.readLines().mapNotNull { line ->
+            val separator = line.indexOf('=')
+            if (separator <= 0) null
+            else line.substring(0, separator).trim() to line.substring(separator + 1).trim()
+        }.toMap()
+    } else {
+        emptyMap()
+    }
+
+fun signingValue(environmentName: String, localName: String): String? =
+    System.getenv(environmentName)?.takeIf { it.isNotBlank() }
+        ?: localSigning[localName]?.takeIf { it.isNotBlank() }
+
+val releaseKeystoreFile = signingValue("ANDROID_KEYSTORE_FILE", "storeFile")
+val releaseKeystorePassword = signingValue("ANDROID_KEYSTORE_PASSWORD", "storePassword")
+val releaseKeyAlias = signingValue("ANDROID_KEY_ALIAS", "keyAlias")
+val releaseKeyPassword = signingValue("ANDROID_KEY_PASSWORD", "keyPassword")
 val hasReleaseSigningConfig =
     listOf(
         releaseKeystoreFile,
@@ -14,6 +35,21 @@ val hasReleaseSigningConfig =
         releaseKeyAlias,
         releaseKeyPassword,
     ).all { !it.isNullOrBlank() }
+val allowUnsignedRelease =
+    providers.gradleProperty("allowUnsignedRelease").orNull?.toBooleanStrictOrNull() == true
+
+if (!hasReleaseSigningConfig && !allowUnsignedRelease) {
+    tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+        doFirst {
+            throw GradleException(
+                "Release signing is not configured. Set ANDROID_KEYSTORE_* variables or " +
+                    "create release-signing/keystore-password.txt (or C:/daima/release-signing/" +
+                    "keystore-password.txt); alternatively pass " +
+                    "-PallowUnsignedRelease=true for a local unsigned artifact.",
+            )
+        }
+    }
+}
 
 android {
     namespace = "com.dohex.hyperrose"
@@ -26,20 +62,12 @@ android {
         versionName = "0.1.5"
     }
     signingConfigs {
-        val debugKeystore = file(System.getProperty("user.home") + "/.android/debug.keystore")
         if (hasReleaseSigningConfig) {
             create("release") {
                 storeFile = file(releaseKeystoreFile!!)
                 storePassword = releaseKeystorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
-            }
-        } else if (debugKeystore.exists()) {
-            create("release") {
-                storeFile = debugKeystore
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
             }
         }
     }

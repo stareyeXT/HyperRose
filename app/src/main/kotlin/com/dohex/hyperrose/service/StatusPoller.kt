@@ -8,6 +8,9 @@ import com.dohex.hyperrose.profile.DeviceProfile
  * 三处实现（DeviceSession / StandaloneGattClient / StandaloneRfcommClient）共用同一逻辑，
  * 避免重复代码及各自的 pollScheduled 防护漂移。
  *
+ * 支持 [pause] / [resume]：耳机放入充电盒（双耳充电）时暂停周期电量查询，减少对耳机
+ * 射频的占用；重新取出或手动刷新后恢复。
+ *
  * 非线程安全 —— 仅在创建它的 Handler 线程上调用。
  */
 class StatusPoller(
@@ -17,30 +20,54 @@ class StatusPoller(
 ) {
     @Volatile
     private var pollScheduled: Boolean = false
+    @Volatile
+    private var paused: Boolean = false
     private var pollRunnable: Runnable? = null
 
-    /** 执行一次全量状态查询，并启动周期电池轮询（幂等，已调度则跳过）。 */
+    /** 执行一次全量状态查询，并启动周期电池轮询（幂等，已调度则跳过；暂停中则不启动）。 */
     fun queryAllStatus() {
         val stepDelay = profile.gattTiming?.statusQueryStepDelayMs ?: 100L
         profile.protocol.statusQuerySequence.forEachIndexed { index, query ->
             handler.postDelayed({ send(query, "Query status") }, stepDelay * index)
         }
-        if (!pollScheduled) {
-            pollScheduled = true
-            val interval = profile.gattTiming?.statusRefreshIntervalMs ?: 30_000L
-            val r = object : Runnable {
-                override fun run() {
-                    send(profile.protocol.queryBattery, "Query battery")
-                    handler.postDelayed(this, interval)
-                }
-            }
-            pollRunnable = r
-            handler.postDelayed(r, interval)
+        if (!pollScheduled && !paused) {
+            schedulePoll()
         }
+    }
+
+    /** 暂停周期电量轮询（耳机在充电盒中时调用），保留全量查询能力。 */
+    fun pause() {
+        paused = true
+        pollRunnable?.let { handler.removeCallbacks(it) }
+        pollRunnable = null
+        pollScheduled = false
+    }
+
+    /** 恢复周期电量轮询。 */
+    fun resume() {
+        paused = false
+        if (!pollScheduled) {
+            schedulePoll()
+        }
+    }
+
+    private fun schedulePoll() {
+        if (pollScheduled) return
+        pollScheduled = true
+        val interval = profile.gattTiming?.statusRefreshIntervalMs ?: 60_000L
+        val r = object : Runnable {
+            override fun run() {
+                send(profile.protocol.queryBattery, "Query battery")
+                handler.postDelayed(this, interval)
+            }
+        }
+        pollRunnable = r
+        handler.postDelayed(r, interval)
     }
 
     /** 取消所有挂起的查询与周期轮询，并重置内部状态，以便下次连接可重新启动。 */
     fun cancel() {
+        paused = false
         pollRunnable?.let { handler.removeCallbacks(it) }
         pollRunnable = null
         pollScheduled = false

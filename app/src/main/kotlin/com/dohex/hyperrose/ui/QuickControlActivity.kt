@@ -11,7 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.dohex.hyperrose.HyperRoseApp
-import com.dohex.hyperrose.ipc.QuickControlLaunchValidator
+import com.dohex.hyperrose.ipc.BroadcastSenderValidator
 import com.dohex.hyperrose.model.EarBatteryState
 import com.dohex.hyperrose.model.TwsBatteryState
 import com.dohex.hyperrose.model.asBatteryLevelOrNull
@@ -30,12 +30,14 @@ class QuickControlActivity : ComponentActivity() {
         const val EXTRA_FORCE_CONNECTED = HyperRoseAction.EXTRA_FORCE_CONNECTED
         private val DEFAULT_DEVICE_NAME =
             com.dohex.hyperrose.profile.DeviceProfileRegistry.defaultProfile.displayName
+        private val TRUSTED_LAUNCHERS =
+            setOf(HyperRoseAction.PACKAGE_APP, HyperRoseAction.PACKAGE_MI_BLUETOOTH)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (!QuickControlLaunchValidator.isTrustedCaller(callingActivity, referrer)) {
+        if (!BroadcastSenderValidator.isAllowed(packageManager, launchedFromUid, TRUSTED_LAUNCHERS)) {
             finish()
             return
         }

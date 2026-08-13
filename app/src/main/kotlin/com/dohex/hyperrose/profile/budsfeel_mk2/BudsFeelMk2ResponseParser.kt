@@ -47,7 +47,7 @@ object BudsFeelMk2ResponseParser {
         var i = start
         while (i < end - 1) {
             val len = data[i].toInt() and 0xFF
-            if (len < 2 || i + len > end) {
+            if (len < 2 || i + len >= end) {
                 i++
                 continue
             }
@@ -67,19 +67,24 @@ object BudsFeelMk2ResponseParser {
 
                 0x0C -> {
                     // Battery: 3 bytes — LEFT RIGHT CASE
-                    if (i + 4 < end) {
+                    if (len >= 4 && i + 4 < end) {
                         val leftRaw = data[i + 2].toInt() and 0xFF
                         val rightRaw = data[i + 3].toInt() and 0xFF
                         val caseRaw = data[i + 4].toInt() and 0xFF
-                        results.add(
-                            DeviceResponse.Battery(
-                                TwsBatteryState(
-                                    left = EarBatteryState(leftRaw, false),
-                                    right = EarBatteryState(rightRaw, false),
-                                    caseBattery = caseRaw.asBatteryLevelOrNull(),
+                        val leftLevel = leftRaw.asBatteryLevelOrNull()
+                        val rightLevel = rightRaw.asBatteryLevelOrNull()
+                        val caseLevel = caseRaw.asBatteryLevelOrNull()
+                        if (leftLevel != null || rightLevel != null || caseLevel != null) {
+                            results.add(
+                                DeviceResponse.Battery(
+                                    TwsBatteryState(
+                                        left = leftLevel?.let { EarBatteryState(it, false) },
+                                        right = rightLevel?.let { EarBatteryState(it, false) },
+                                        caseBattery = caseLevel,
+                                    )
                                 )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -107,13 +112,13 @@ object BudsFeelMk2ResponseParser {
         }
     }
 
-    private fun parseAncValue(value: Int): DeviceResponse.Anc {
+    private fun parseAncValue(value: Int): DeviceResponse {
         val mode = when (value) {
             0x01 -> AncMode.NOISE_CANCEL
             0x02 -> AncMode.NORMAL
             0x03 -> AncMode.TRANSPARENT
             0x04 -> AncMode.WIND_NOISE
-            else -> return DeviceResponse.Anc(AncMode.NORMAL)
+            else -> return DeviceResponse.Unknown
         }
         return DeviceResponse.Anc(mode)
     }

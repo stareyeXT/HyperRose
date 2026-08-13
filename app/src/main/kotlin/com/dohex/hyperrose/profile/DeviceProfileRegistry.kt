@@ -1,5 +1,6 @@
 package com.dohex.hyperrose.profile
 
+import android.annotation.SuppressLint
 import com.dohex.hyperrose.profile.budsfeel_lite.BudsFeelLiteProfile
 import com.dohex.hyperrose.profile.budsfeel_mk2.BudsFeelMk2Profile
 import com.dohex.hyperrose.profile.rose_cambrian.RoseCambrianProfile
@@ -27,11 +28,14 @@ object DeviceProfileRegistry {
     fun findByGattServiceUuid(uuid: java.util.UUID): DeviceProfile? =
         profiles.firstOrNull { uuid == it.serviceUuid }
 
+    @SuppressLint("MissingPermission")
     fun findByDevice(device: android.bluetooth.BluetoothDevice): DeviceProfile? {
-        device.uuids?.forEach { parcelUuid ->
+        runCatching { device.uuids }.getOrNull()?.forEach { parcelUuid ->
             findByGattServiceUuid(parcelUuid.uuid)?.let { return it }
         }
-        val name = device.name ?: device.alias ?: return null
+        val name = runCatching { device.name }.getOrNull()
+            ?: runCatching { device.alias }.getOrNull()
+            ?: return null
         return findByName(name)
     }
 }

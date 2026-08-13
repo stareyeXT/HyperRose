@@ -10,6 +10,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.dohex.hyperrose.ipc.BluetoothCommandDispatcher
+import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.model.AncDepth
 import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.EarBatteryState
@@ -132,6 +133,17 @@ class DeviceControlStore(
             context: Context,
             intent: Intent,
         ) {
+            if (!com.dohex.hyperrose.ipc.BroadcastSenderValidator.isAllowed(
+                    context.packageManager,
+                    sentFromUid,
+                    setOf(
+                        HyperRoseAction.PACKAGE_APP,
+                        HyperRoseAction.PACKAGE_BLUETOOTH,
+                        HyperRoseAction.PACKAGE_MI_BLUETOOTH,
+                        HyperRoseAction.PACKAGE_MILINK,
+                    ),
+                )
+            ) return
             when (intent.action) {
                 HyperRoseAction.ANC_SELECT -> {
                     val modeName = intent.getStringExtra(HyperRoseAction.EXTRA_MODE) ?: return@onReceive
@@ -159,16 +171,17 @@ class DeviceControlStore(
                     val directActive = _transport.value == ConnectionTransport.DIRECT_RFCOMM ||
                         _transport.value == ConnectionTransport.DIRECT_BLE
                     val directPending = directRetryDevice != null
-                    // 优先 App 直连：hook 报告已连接时，若尚未直连/正在直连，则先发起直连；
-                    // 直连失败会自动重试，重试用尽后回退到桥接。
+                    // hook 已在蓝牙进程建立会话：为避免双连接占用耳机射频，不再额外发起 App 直连，
+                    // 直接走桥接模式。用户显式触发直连（设备选择页）仍走 attemptDirectConnect。
                     if (!directActive && !directPending && device != null) {
                         val profile = profileId?.let {
                             com.dohex.hyperrose.profile.DeviceProfileRegistry.findById(it)
                         } ?: com.dohex.hyperrose.profile.DeviceProfileRegistry.findByDevice(device)
                         _connectedDevice.value = device
                         connectedProfileId = profile?.id
-                        _connectionState.value = DeviceConnectionState.CONNECTING
-                        attemptDirectConnect(device, profile)
+                        _transport.value = ConnectionTransport.HOOK_BRIDGE
+                        _connectionState.value = DeviceConnectionState.CONNECTED
+                        clearDirectRetry()
                     } else if (!directActive && !directPending) {
                         // 无法直连（缺少设备信息），回退桥接
                         _transport.value = ConnectionTransport.HOOK_BRIDGE
@@ -520,7 +533,7 @@ class DeviceControlStore(
                     setPackage(HyperRoseAction.PACKAGE_BLUETOOTH)
                     addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                     putExtra(HyperRoseAction.EXTRA_HEX, hex)
-                    appContext.sendBroadcast(this)
+                    appContext.sendHyperRoseBroadcast(this)
                 }
             }
 
@@ -814,7 +827,7 @@ class DeviceControlStore(
             HyperRoseAction.PACKAGE_MILINK,
             HyperRoseAction.PACKAGE_MI_BLUETOOTH,
         ).forEach { pkg ->
-            appContext.sendBroadcast(
+            appContext.sendHyperRoseBroadcast(
                 Intent(action).apply {
                     setPackage(pkg)
                     addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -833,7 +846,7 @@ class DeviceControlStore(
         val color = defaultProfileColorFor(pid).lowercase()
         val leftImage = resolveIslandImage(pid, color, leftSide = true)
         val rightImage = if (isMono) null else resolveIslandImage(pid, color, leftSide = false)
-        appContext.sendBroadcast(
+        appContext.sendHyperRoseBroadcast(
             Intent(HyperRoseAction.SHOW_ISLAND).apply {
                 setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -872,7 +885,7 @@ class DeviceControlStore(
         val color = colorName.lowercase()
         val leftImage = resolveIslandImage(pid, color, leftSide = true)
         val rightImage = if (isMono) null else resolveIslandImage(pid, color, leftSide = false)
-        appContext.sendBroadcast(
+        appContext.sendHyperRoseBroadcast(
             Intent(HyperRoseAction.SHOW_ISLAND).apply {
                 setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -892,7 +905,7 @@ class DeviceControlStore(
 
     private fun broadcastDeviceDisconnected() {
         val device = _connectedDevice.value ?: return
-        appContext.sendBroadcast(
+        appContext.sendHyperRoseBroadcast(
             Intent(HyperRoseAction.DEVICE_DISCONNECTED).apply {
                 setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)

@@ -2,26 +2,26 @@ package com.dohex.hyperrose.hook
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.dohex.hyperrose.hook.HyperRoseModuleEntry.Companion.TAG
+import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.model.AncDepth
 import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.EqPreset
 import com.dohex.hyperrose.model.TransparencyLevel
 import com.dohex.hyperrose.model.TwsBatteryState
+import com.dohex.hyperrose.model.inChargingCase
 import com.dohex.hyperrose.model.withLastKnownCaseBattery
 import com.dohex.hyperrose.profile.DeviceProfile
 import com.dohex.hyperrose.profile.DeviceResponse
 import com.dohex.hyperrose.service.StatusPoller
 import io.github.libxposed.api.XposedModule
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import com.dohex.hyperrose.ipc.HyperRoseIpc as HyperRoseAction
 
@@ -44,7 +44,7 @@ abstract class DeviceSession(
     var currentGameMode: Boolean? = null; protected set
     var currentLowLatency: Boolean? = null; protected set
 
-    private val bleLogTimeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val bleLogTimeFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.US)
 
     abstract fun connect(device: BluetoothDevice)
     abstract fun disconnect()
@@ -67,6 +67,7 @@ abstract class DeviceSession(
                     val battery = if (result.info.right == null) result.info
                         else result.info.withLastKnownCaseBattery(currentBattery)
                     currentBattery = battery
+                    if (battery.inChargingCase()) statusPoller.pause() else statusPoller.resume()
                     broadcastState(HyperRoseAction.BATTERY_CHANGED) {
                         putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, battery.left?.level ?: -1)
                         putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, battery.right?.level ?: -1)
@@ -81,7 +82,7 @@ abstract class DeviceSession(
                         putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, battery.caseBattery ?: -1)
                         putExtra(HyperRoseAction.EXTRA_DEVICE, connectedDevice)
                     }
-                    context.sendBroadcast(
+                    context.sendHyperRoseBroadcast(
                         Intent(HyperRoseAction.SHOW_ISLAND).apply {
                             setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
                             addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -170,7 +171,7 @@ abstract class DeviceSession(
             HyperRoseAction.PACKAGE_MILINK,
             HyperRoseAction.PACKAGE_BLUETOOTH,
         ).forEach { pkg ->
-            context.sendBroadcast(
+            context.sendHyperRoseBroadcast(
                 Intent(action).apply {
                     setPackage(pkg)
                     addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -190,7 +191,7 @@ abstract class DeviceSession(
 
     private fun broadcastBleLog(direction: String, data: String, parsed: String) {
         if (!BluetoothProcessHook.isBleLogEnabled()) return
-        val time = bleLogTimeFormat.format(Date())
+        val time = LocalTime.now().format(bleLogTimeFormat)
         Intent(HyperRoseAction.BLE_LOG).apply {
             setPackage(HyperRoseAction.PACKAGE_APP)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -200,56 +201,12 @@ abstract class DeviceSession(
             putExtra(HyperRoseAction.EXTRA_LOG_PARSED, parsed)
             putExtra(HyperRoseAction.EXTRA_LOG_TIME, time)
             putExtra(HyperRoseAction.EXTRA_DEVICE_NAME, connectedDevice?.name)
-            context.sendBroadcast(this)
+            context.sendHyperRoseBroadcast(this)
         }
     }
 
-    private var refreshReceiver: BroadcastReceiver? = null
-    private var refreshReceiverRegistered = false
-
-    protected fun registerRefreshReceiver() {
-        if (refreshReceiverRegistered) return
-        refreshReceiverRegistered = true
-        val filter = IntentFilter().apply { addAction(HyperRoseAction.REFRESH_STATUS) }
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context?, intent: Intent?) {
-                if (intent?.action != HyperRoseAction.REFRESH_STATUS) return
-                queryAllStatus()
-                val device = connectedDevice ?: return
-                listOf(
-                    HyperRoseAction.PACKAGE_APP,
-                    HyperRoseAction.PACKAGE_MI_BLUETOOTH,
-                    HyperRoseAction.PACKAGE_MILINK,
-                    HyperRoseAction.PACKAGE_BLUETOOTH,
-                ).forEach { pkg ->
-                    context.sendBroadcast(
-                        Intent(HyperRoseAction.DEVICE_CONNECTED).apply {
-                            putExtra(HyperRoseAction.EXTRA_DEVICE, device)
-                            putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)
-                            currentAnc?.let { putExtra(HyperRoseAction.EXTRA_MODE, it.name) }
-                            currentEq?.let { putExtra(HyperRoseAction.EXTRA_EQ_MODE, it.name) }
-                            currentGameMode?.let { putExtra(HyperRoseAction.EXTRA_ENABLED, it) }
-                            currentBattery?.let { b ->
-                                putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, b.left?.level ?: -1)
-                                putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, b.right?.level ?: -1)
-                                putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, b.caseBattery ?: -1)
-                            }
-                            setPackage(pkg)
-                            addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                        },
-                    )
-                }
-            }
-        }
-        refreshReceiver = receiver
-        context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
-    }
-
-    /** 子类 disconnect() 必须调用：注销广播接收器并取消轮询，避免在 Bluetooth 进程中泄漏。 */
+    /** 子类 disconnect() 必须调用，以取消挂起的状态查询和轮询。 */
     protected fun cleanupSession() {
-        refreshReceiver?.let { runCatching { context.unregisterReceiver(it) } }
-        refreshReceiver = null
-        refreshReceiverRegistered = false
         statusPoller.cancel()
     }
 
@@ -262,7 +219,7 @@ abstract class DeviceSession(
             HyperRoseAction.PACKAGE_MILINK,
             HyperRoseAction.PACKAGE_BLUETOOTH,
         ).forEach { pkg ->
-            context.sendBroadcast(
+            context.sendHyperRoseBroadcast(
                 Intent(HyperRoseAction.DEVICE_CONNECTED).apply {
                     putExtra(HyperRoseAction.EXTRA_DEVICE, device)
                     putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)

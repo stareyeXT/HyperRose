@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dohex.hyperrose.debug.BleLog
 import com.dohex.hyperrose.ipc.HyperRoseIpc
+import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.profile.DeviceProfile
 import com.dohex.hyperrose.ui.state.DeviceControlStore
 import top.yukonga.miuix.kmp.basic.Button
@@ -76,6 +77,13 @@ fun BleDebugPage(
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 if (intent?.action != HyperRoseIpc.BLE_LOG) return
+                val receiverContext = ctx ?: return
+                if (!com.dohex.hyperrose.ipc.BroadcastSenderValidator.isAllowed(
+                        receiverContext.packageManager,
+                        sentFromUid,
+                        setOf(HyperRoseIpc.PACKAGE_BLUETOOTH),
+                    )
+                ) return
                 BleLog.log(
                     source = intent.getStringExtra(HyperRoseIpc.EXTRA_LOG_SOURCE).orEmpty(),
                     direction = intent.getStringExtra(HyperRoseIpc.EXTRA_LOG_DIRECTION).orEmpty(),
@@ -91,13 +99,13 @@ fun BleDebugPage(
         Intent(HyperRoseIpc.BLE_LOG_CONNECT).apply {
             setPackage(HyperRoseIpc.PACKAGE_BLUETOOTH)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-            context.sendBroadcast(this)
+            context.sendHyperRoseBroadcast(this)
         }
         onDispose {
             Intent(HyperRoseIpc.BLE_LOG_DISCONNECT).apply {
                 setPackage(HyperRoseIpc.PACKAGE_BLUETOOTH)
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                context.sendBroadcast(this)
+                context.sendHyperRoseBroadcast(this)
             }
             context.unregisterReceiver(receiver)
         }
@@ -109,7 +117,7 @@ fun BleDebugPage(
             Intent(HyperRoseIpc.BLE_LOG_CLEAR).apply {
                 setPackage(HyperRoseIpc.PACKAGE_BLUETOOTH)
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                context.sendBroadcast(this)
+                context.sendHyperRoseBroadcast(this)
             }
         }
     }

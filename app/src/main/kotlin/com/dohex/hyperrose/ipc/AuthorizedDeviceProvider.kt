@@ -32,7 +32,7 @@ class AuthorizedDeviceProvider : ContentProvider() {
         /** App 进程调用：更新内存缓存并通知 Hook 进程 */
         fun refresh(context: Context) {
             cachedAddresses = AuthorizedDeviceStore.getAll(context)
-            context.sendBroadcast(
+            context.sendHyperRoseBroadcast(
                 Intent(HyperRoseIpc.WHITELIST_CHANGED).apply {
                     setPackage(HyperRoseIpc.PACKAGE_BLUETOOTH)
                     addFlags(Intent.FLAG_RECEIVER_FOREGROUND)

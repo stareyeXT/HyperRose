@@ -15,6 +15,7 @@ import android.graphics.drawable.Icon
 import android.util.Log
 import com.dohex.hyperrose.hook.HyperRoseModuleEntry.Companion.TAG
 import com.dohex.hyperrose.ipc.QuickControlIntentFactory
+import com.dohex.hyperrose.ipc.BroadcastSenderValidator
 import com.dohex.hyperrose.model.asBatteryLevelOrNull
 import com.dohex.hyperrose.util.FocusIslandBridge
 import com.dohex.hyperrose.util.ReflectionHelper
@@ -39,7 +40,12 @@ object MiBluetoothFocusIslandHook {
     private var lastIslandRightCharging = false
     private var lastLeftImageName: String? = null
     private var lastRightImageName: String? = null
+
+    // 会话内首条 SHOW_ISLAND 才展示大岛；之后的更新只发轻量焦点通知，避免反复展开。
+    private var firstIslandShown = false
     private val iconCache = mutableMapOf<String, Icon?>()
+    private val trustedBroadcastSenders =
+        setOf(HyperRoseAction.PACKAGE_APP, HyperRoseAction.PACKAGE_BLUETOOTH)
 
     @SuppressLint("PrivateApi")
     fun init(
@@ -114,6 +120,13 @@ object MiBluetoothFocusIslandHook {
                     ctx: Context,
                     intent: Intent,
                 ) {
+                    if (intent.action != Intent.ACTION_USER_PRESENT &&
+                        !BroadcastSenderValidator.isAllowed(
+                            ctx.packageManager,
+                            sentFromUid,
+                            trustedBroadcastSenders,
+                        )
+                    ) return
                     when (intent.action) {
                         HyperRoseAction.SHOW_ISLAND -> {
                             val left =
@@ -140,8 +153,9 @@ object MiBluetoothFocusIslandHook {
                             val leftImageName = intent.getStringExtra(HyperRoseAction.EXTRA_LEFT_IMAGE)
                             val rightImageName = intent.getStringExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE)
 
-                            // 电量 + 图片无变化时跳过，避免锁屏下重复触发动效
-                            if (left == lastIslandLeft && right == lastIslandRight &&
+                            // 仅在上一条通知实际投递成功后去重；失败时允许相同状态重试。
+                            if (firstIslandShown &&
+                                left == lastIslandLeft && right == lastIslandRight &&
                                 caseLevel == lastIslandCase &&
                                 leftCharging == lastIslandLeftCharging &&
                                 rightCharging == lastIslandRightCharging &&
@@ -151,42 +165,80 @@ object MiBluetoothFocusIslandHook {
                                 return
                             }
 
-                            lastIslandLeft = left
-                            lastIslandRight = right
-                            lastIslandCase = caseLevel
-                            lastIslandLeftCharging = leftCharging
-                            lastIslandRightCharging = rightCharging
-                            lastLeftImageName = leftImageName
-                            lastRightImageName = rightImageName
-
                             val device =
                                 intent.getParcelableExtra(
                                     HyperRoseAction.EXTRA_DEVICE,
                                     BluetoothDevice::class.java,
                                 )
 
-                            val leftIcon = resolveIcon(leftImageName)
-                            val rightIcon = resolveIcon(rightImageName)
-
-                            runCatching {
-                                showIsland(
-                                    context = ctx,
-                                    device = device,
-                                    left = left,
-                                    right = right,
-                                    caseLevel = caseLevel,
-                                    leftCharging = leftCharging,
-                                    rightCharging = rightCharging,
-                                    leftIcon = leftIcon,
-                                    rightIcon = rightIcon,
-                                )
-                            }.onFailure {
-                                module.log(
-                                    Log.WARN,
-                                    TAG,
-                                    "MiBluetoothFocusIslandHook: show island failed",
-                                    it,
-                                )
+                            // 仅会话内首条 SHOW_ISLAND 展开大岛，之后只更新轻量焦点通知。
+                            if (!firstIslandShown) {
+                                val leftIcon = resolveIcon(leftImageName)
+                                val rightIcon = resolveIcon(rightImageName)
+                                val shown = runCatching {
+                                    showIsland(
+                                        context = ctx,
+                                        device = device,
+                                        left = left,
+                                        right = right,
+                                        caseLevel = caseLevel,
+                                        leftCharging = leftCharging,
+                                        rightCharging = rightCharging,
+                                        leftIcon = leftIcon,
+                                        rightIcon = rightIcon,
+                                    )
+                                }.getOrElse {
+                                    module.log(
+                                        Log.WARN,
+                                        TAG,
+                                        "MiBluetoothFocusIslandHook: show island failed",
+                                        it,
+                                    )
+                                    false
+                                }
+                                if (shown) {
+                                    firstIslandShown = true
+                                    rememberIslandState(
+                                        left,
+                                        right,
+                                        caseLevel,
+                                        leftCharging,
+                                        rightCharging,
+                                        leftImageName,
+                                        rightImageName,
+                                    )
+                                }
+                            } else {
+                                val shown = runCatching {
+                                    showFocusNotification(
+                                        context = ctx,
+                                        device = device,
+                                        left = left,
+                                        right = right,
+                                        caseLevel = caseLevel,
+                                        leftCharging = leftCharging,
+                                        rightCharging = rightCharging,
+                                    )
+                                }.getOrElse {
+                                    module.log(
+                                        Log.WARN,
+                                        TAG,
+                                        "MiBluetoothFocusIslandHook: update focus notification failed",
+                                        it,
+                                    )
+                                    false
+                                }
+                                if (shown) {
+                                    rememberIslandState(
+                                        left,
+                                        right,
+                                        caseLevel,
+                                        leftCharging,
+                                        rightCharging,
+                                        leftImageName,
+                                        rightImageName,
+                                    )
+                                }
                             }
                         }
 
@@ -199,6 +251,7 @@ object MiBluetoothFocusIslandHook {
                             lastIslandRightCharging = false
                             lastLeftImageName = null
                             lastRightImageName = null
+                            firstIslandShown = false
                         }
 
                         HyperRoseAction.DEVICE_DISCONNECTED -> {
@@ -210,6 +263,7 @@ object MiBluetoothFocusIslandHook {
                             lastIslandRightCharging = false
                             lastLeftImageName = null
                             lastRightImageName = null
+                            firstIslandShown = false
                             cancelIsland(ctx)
                         }
 
@@ -251,9 +305,9 @@ object MiBluetoothFocusIslandHook {
         rightCharging: Boolean,
         leftIcon: Icon?,
         rightIcon: Icon?,
-    ) {
+    ): Boolean {
         val nm =
-            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return false
         val content =
             buildBatteryText(
                 left = left,
@@ -274,7 +328,7 @@ object MiBluetoothFocusIslandHook {
                 deviceName = device?.name ?: "耳机",
                 leftIcon = leftIcon,
                 rightIcon = rightIcon,
-            ) ?: return
+            ) ?: return false
 
         val channel =
             NotificationChannel(
@@ -300,6 +354,58 @@ object MiBluetoothFocusIslandHook {
         builder.addExtras(extras)
 
         nm.notify(ISLAND_NOTIFICATION_ID, builder.build())
+        return true
+    }
+
+    /**
+     * 轻量焦点通知：复用同一通知 ID，仅更新标题/正文，不带大岛 extras。
+     * 首条 SHOW_ISLAND 展示大岛之后的所有更新走这里，避免反复展开动画。
+     */
+    @SuppressLint("NotificationPermission")
+    private fun showFocusNotification(
+        context: Context,
+        device: BluetoothDevice?,
+        left: Int,
+        right: Int,
+        caseLevel: Int,
+        leftCharging: Boolean,
+        rightCharging: Boolean,
+    ): Boolean {
+        val nm =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return false
+        val content =
+            buildBatteryText(
+                left = left,
+                right = right,
+                caseLevel = caseLevel,
+                leftCharging = leftCharging,
+                rightCharging = rightCharging,
+            )
+
+        val channel =
+            NotificationChannel(
+                CHANNEL_ID,
+                "HyperRose 通知",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "耳机状态通知"
+                setShowBadge(false)
+            }
+        nm.createNotificationChannel(channel)
+
+        val builder =
+            Notification
+                .Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setContentTitle(device?.name ?: "HyperRose")
+                .setContentText(content)
+                .setStyle(Notification.BigTextStyle().bigText(content))
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
+                .setContentIntent(buildQuickControlPendingIntent(context, device, left, right))
+
+        nm.notify(ISLAND_NOTIFICATION_ID, builder.build())
+        return true
     }
 
     private fun buildBatteryText(
@@ -326,6 +432,24 @@ object MiBluetoothFocusIslandHook {
         level: Int,
         charging: Boolean,
     ): String = if (charging) "$level% ⚡" else "$level%"
+
+    private fun rememberIslandState(
+        left: Int,
+        right: Int,
+        caseLevel: Int,
+        leftCharging: Boolean,
+        rightCharging: Boolean,
+        leftImageName: String?,
+        rightImageName: String?,
+    ) {
+        lastIslandLeft = left
+        lastIslandRight = right
+        lastIslandCase = caseLevel
+        lastIslandLeftCharging = leftCharging
+        lastIslandRightCharging = rightCharging
+        lastLeftImageName = leftImageName
+        lastRightImageName = rightImageName
+    }
 
     private fun buildQuickControlPendingIntent(
         context: Context,

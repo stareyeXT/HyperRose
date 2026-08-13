@@ -37,7 +37,7 @@ object RoseCambrianResponseParser {
         var i = start
         while (i < end - 1) {
             val len = data[i].toInt() and 0xFF
-            if (len < 2 || i + len > end) {
+            if (len < 2 || i + len >= end) {
                 i++
                 continue
             }
@@ -63,7 +63,8 @@ object RoseCambrianResponseParser {
                         values.add(data[vi].toInt() and 0xFF)
                         vi++
                     }
-                    val nonZero = values.filter { it > 0 }
+                    val levels = values.map { it.asBatteryLevelOrNull() }
+                    val nonZero = levels.filterNotNull().filter { it > 0 }
                     if (nonZero.size == 1 && values.size >= 3) {
                         results.add(
                             DeviceResponse.Battery(
@@ -74,30 +75,32 @@ object RoseCambrianResponseParser {
                             )
                         )
                     } else {
-                        results.add(
-                            when (values.size) {
+                        val battery =
+                            when (levels.size) {
                                 1 -> DeviceResponse.Battery(
                                     TwsBatteryState(
-                                        left = EarBatteryState(values[0], false),
+                                        left = levels[0]?.let { EarBatteryState(it, false) },
                                         right = null, caseBattery = null,
                                     )
                                 )
                                 2 -> DeviceResponse.Battery(
                                     TwsBatteryState(
-                                        left = EarBatteryState(values[0], false),
-                                        right = EarBatteryState(values[1], false),
+                                        left = levels[0]?.let { EarBatteryState(it, false) },
+                                        right = levels[1]?.let { EarBatteryState(it, false) },
                                         caseBattery = null,
                                     )
                                 )
                                 else -> DeviceResponse.Battery(
                                     TwsBatteryState(
-                                        left = EarBatteryState(values[0], false),
-                                        right = EarBatteryState(values[1], false),
-                                        caseBattery = values[2].asBatteryLevelOrNull(),
+                                        left = levels[0]?.let { EarBatteryState(it, false) },
+                                        right = levels[1]?.let { EarBatteryState(it, false) },
+                                        caseBattery = levels[2],
                                     )
                                 )
                             }
-                        )
+                        if (battery.info.left != null || battery.info.right != null || battery.info.caseBattery != null) {
+                            results.add(battery)
+                        }
                     }
                 }
 
@@ -129,9 +132,9 @@ object RoseCambrianResponseParser {
                     values.add(data[vi].toInt() and 0xFF)
                     vi++
                 }
-                val nonZero = values.filter { it > 0 }
+                val nonZero = values.mapNotNull { it.asBatteryLevelOrNull() }.filter { it > 0 }
                 val level = if (nonZero.size == 1 && values.size >= 3) nonZero[0]
-                    else values.firstOrNull() ?: 0
+                    else values.firstOrNull()?.asBatteryLevelOrNull() ?: return DeviceResponse.Unknown
                 DeviceResponse.Battery(
                     TwsBatteryState(
                         left = EarBatteryState(level, false),
@@ -155,23 +158,23 @@ object RoseCambrianResponseParser {
         }
     }
 
-    private fun parseAncValue(value: Int): DeviceResponse.Anc {
+    private fun parseAncValue(value: Int): DeviceResponse {
         val mode = when (value) {
             0x01 -> AncMode.NOISE_CANCEL
             0x02 -> AncMode.NORMAL
             0x03 -> AncMode.TRANSPARENT
             0x04 -> AncMode.WIND_NOISE
-            else -> return DeviceResponse.Anc(AncMode.NORMAL)
+            else -> return DeviceResponse.Unknown
         }
         return DeviceResponse.Anc(mode)
     }
 
-    private fun parseEqValue(value: Int): DeviceResponse.Eq {
+    private fun parseEqValue(value: Int): DeviceResponse {
         val preset = when (value) {
             0x00 -> EqPreset.HIFI
             0x01 -> EqPreset.POP
             0x02 -> EqPreset.ROCK
-            else -> return DeviceResponse.Eq(EqPreset.POP)
+            else -> return DeviceResponse.Unknown
         }
         return DeviceResponse.Eq(preset)
     }

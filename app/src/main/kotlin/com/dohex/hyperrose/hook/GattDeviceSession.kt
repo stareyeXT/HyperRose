@@ -24,10 +24,11 @@ class GattDeviceSession(
     profile: DeviceProfile,
 ) : DeviceSession(context, module, profile) {
 
-    override val isConnected: Boolean get() = gatt != null && writeChar != null
+    override val isConnected: Boolean get() = ready
 
     private var gatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
+    private var ready = false
 
     private val gattSpec: TransportSpec.Gatt
         get() = profile.transport as TransportSpec.Gatt
@@ -35,7 +36,7 @@ class GattDeviceSession(
     override fun connect(device: BluetoothDevice) {
         connectedDevice = device
         module.log(Log.INFO, TAG, "GattDeviceSession: connecting to ${device.address}")
-        registerRefreshReceiver()
+        ready = false
         gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
@@ -45,6 +46,7 @@ class GattDeviceSession(
         gatt?.close()
         gatt = null
         writeChar = null
+        ready = false
         connectedDevice = null
         currentBattery = null
         currentAnc = null
@@ -82,12 +84,20 @@ class GattDeviceSession(
                 status: Int,
                 newState: Int,
             ) {
+                if (gatt !== this@GattDeviceSession.gatt) {
+                    gatt.close()
+                    return
+                }
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        failConnection("connection failed: $status")
+                        return
+                    }
                     module.log(Log.INFO, TAG, "GattDeviceSession: connected, discovering services")
-                    gatt.discoverServices()
+                    if (!gatt.discoverServices()) failConnection("service discovery rejected")
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     module.log(Log.INFO, TAG, "GattDeviceSession: disconnected")
-                    handler.removeCallbacksAndMessages(null)
+                    disconnect()
                 }
             }
 
@@ -95,12 +105,17 @@ class GattDeviceSession(
                 gatt: BluetoothGatt,
                 status: Int,
             ) {
+                if (gatt !== this@GattDeviceSession.gatt) {
+                    gatt.close()
+                    return
+                }
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     module.log(
                         Log.ERROR,
                         TAG,
                         "GattDeviceSession: service discovery failed: $status"
                     )
+                    failConnection("service discovery failed")
                     return
                 }
 
@@ -111,6 +126,7 @@ class GattDeviceSession(
                         TAG,
                         "GattDeviceSession: service ${gattSpec.serviceUuid} not found"
                     )
+                    failConnection("service not found")
                     return
                 }
 
@@ -121,6 +137,7 @@ class GattDeviceSession(
                         TAG,
                         "GattDeviceSession: write char ${gattSpec.writeCharUuid} not found"
                     )
+                    failConnection("write characteristic not found")
                     return
                 }
                 @Suppress("DEPRECATION")
@@ -133,18 +150,38 @@ class GattDeviceSession(
                         TAG,
                         "GattDeviceSession: notify char ${gattSpec.notifyCharUuid} not found"
                     )
+                    failConnection("notify characteristic not found")
                     return
                 }
 
-                gatt.setCharacteristicNotification(notifyChar, true)
-                val descriptor = notifyChar.getDescriptor(gattSpec.cccdUuid)
-                if (descriptor != null) {
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
+                if (!gatt.setCharacteristicNotification(notifyChar, true)) {
+                    failConnection("enabling notifications failed")
+                    return
                 }
+                val descriptor = notifyChar.getDescriptor(gattSpec.cccdUuid)
+                if (descriptor == null) {
+                    failConnection("notification descriptor not found")
+                    return
+                }
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                if (!gatt.writeDescriptor(descriptor)) {
+                    failConnection("notification descriptor write rejected")
+                }
+            }
 
+            override fun onDescriptorWrite(
+                gatt: BluetoothGatt,
+                descriptor: BluetoothGattDescriptor,
+                status: Int,
+            ) {
+                if (gatt !== this@GattDeviceSession.gatt || descriptor.uuid != gattSpec.cccdUuid) return
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    failConnection("notification descriptor write failed: $status")
+                    return
+                }
+                ready = true
                 module.log(Log.INFO, TAG, "GattDeviceSession: GATT ready, querying initial status")
-                sendCommand(profile.protocol.queryBattery)
+                broadcastDeviceConnected()
                 handler.postDelayed(
                     { queryAllStatus() },
                     profile.gattTiming?.initialStatusQueryDelayMs ?: 120L
@@ -155,8 +192,14 @@ class GattDeviceSession(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
+                if (gatt !== this@GattDeviceSession.gatt) return
                 val data = characteristic.value ?: return
                 handleResponse(data)
             }
         }
+
+    private fun failConnection(reason: String) {
+        module.log(Log.ERROR, TAG, "GattDeviceSession: $reason")
+        disconnect()
+    }
 }

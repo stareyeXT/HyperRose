@@ -98,6 +98,6 @@ object BluetoothCommandDispatcher {
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                 extras?.invoke(this)
             }
-        context.sendBroadcast(intent)
+        context.sendHyperRoseBroadcast(intent)
     }
 }

@@ -11,6 +11,7 @@ import com.dohex.hyperrose.profile.TransportSpec
 import io.github.libxposed.api.XposedModule
 import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 
 @SuppressLint("MissingPermission")
 class RfcommDeviceSession(
@@ -26,33 +27,31 @@ class RfcommDeviceSession(
     private var connectThread: Thread? = null
     private val pendingCommands = ConcurrentLinkedQueue<Pair<ByteArray, String>>()
     private var running = false
-    @Volatile
-    private var connectCancelled = false
+    private val connectionGeneration = AtomicInteger()
 
     override fun connect(device: BluetoothDevice) {
         connectedDevice = device
         module.log(Log.INFO, TAG, "RfcommDeviceSession: connecting to ${device.address}")
-        registerRefreshReceiver()
-        connectCancelled = false
+        val generation = connectionGeneration.incrementAndGet()
 
         val transport = profile.transport as TransportSpec.Rfcomm
         connectThread = Thread {
             try {
                 val socket = device.createRfcommSocketToServiceRecord(transport.dataChannelUuid)
                 socket.connect()
-                if (connectCancelled) {
+                if (generation != connectionGeneration.get()) {
                     module.log(Log.INFO, TAG, "RfcommDeviceSession: connect cancelled after socket opened")
                     runCatching { socket.close() }
                     return@Thread
                 }
                 module.log(Log.INFO, TAG, "RfcommDeviceSession: RFCOMM connected")
                 dataSocket = socket
-                startReader()
+                startReader(socket)
                 flushPendingCommands()
                 queryAllStatus()
                 broadcastDeviceConnected()
             } catch (e: IOException) {
-                if (!connectCancelled) {
+                if (generation == connectionGeneration.get()) {
                     module.log(Log.ERROR, TAG, "RfcommDeviceSession: connect failed", e)
                     pendingCommands.clear()
                     disconnect()
@@ -66,7 +65,7 @@ class RfcommDeviceSession(
     }
 
     override fun disconnect() {
-        connectCancelled = true
+        connectionGeneration.incrementAndGet()
         running = false
         readerThread?.interrupt()
         readerThread = null
@@ -122,15 +121,15 @@ class RfcommDeviceSession(
         if (count > 0) module.log(Log.DEBUG, TAG, "Flushed $count pending commands")
     }
 
-    private fun startReader() {
+    private fun startReader(socket: BluetoothSocket) {
         running = true
         readerThread = Thread {
             val buf = ByteArray(512)
-            val input = dataSocket!!.inputStream
+            val input = socket.inputStream
             val frameBuf = ByteArray(2048)
             var frameLen = 0
 
-            while (running) {
+            while (running && dataSocket === socket) {
                 try {
                     val n = input.read(buf)
                     if (n < 0) break

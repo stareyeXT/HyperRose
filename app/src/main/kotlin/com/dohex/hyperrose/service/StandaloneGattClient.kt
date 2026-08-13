@@ -19,6 +19,7 @@ import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.EqPreset
 import com.dohex.hyperrose.model.TransparencyLevel
 import com.dohex.hyperrose.model.TwsBatteryState
+import com.dohex.hyperrose.model.inChargingCase
 import com.dohex.hyperrose.model.withLastKnownCaseBattery
 import com.dohex.hyperrose.profile.DeviceProfile
 import com.dohex.hyperrose.profile.DeviceProfileRegistry
@@ -27,8 +28,8 @@ import com.dohex.hyperrose.profile.TransportSpec
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /** 独立 App 用的 BLE GATT 通信管理器。 所有状态通过 StateFlow 暴露给 Compose UI。 */
@@ -39,7 +40,7 @@ class StandaloneGattClient(
     companion object {
         private const val TAG = "HyperRose.StandaloneGattClient"
         private const val DISCOVERY_TIMEOUT_MS = 10_000L
-        private val logTimeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+        private val logTimeFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.US)
     }
 
     enum class ConnectionState {
@@ -90,10 +91,16 @@ class StandaloneGattClient(
 
     override fun connect(device: BluetoothDevice) {
         // 先释放旧连接，防止 BluetoothGatt 泄漏和回调串扰
-        gatt?.let { old ->
+        val oldGatt = gatt
+        gatt = null
+        oldGatt?.let { old ->
             old.disconnect()
             old.close()
         }
+        handler.removeCallbacksAndMessages(null)
+        statusPoller.cancel()
+        writeChar = null
+        _profileMatchResult.value = null
         _connectionState.value = ConnectionState.CONNECTING
         _deviceName.value = device.name
         Log.i(TAG, "Connecting to ${device.address}")
@@ -108,14 +115,7 @@ class StandaloneGattClient(
         gatt = null
         writeChar = null
         _connectionState.value = ConnectionState.DISCONNECTED
-        _battery.value = null
-        _ancMode.value = null
-        _ancDepth.value = null
-        _transLevel.value = null
-        _eqMode.value = null
-        _gameMode.value = null
-        _lowLatency.value = null
-        _deviceName.value = null
+        clearPublishedState()
     }
 
     fun sendCommand(packet: ByteArray, description: String = "") {
@@ -129,7 +129,7 @@ class StandaloneGattClient(
         }
         val hex = packet.toHexString()
         Log.d(TAG, "→ $hex")
-        BleLog.log("App", "TX", hex, description, logTimeFormat.format(Date()))
+        BleLog.log("App", "TX", hex, description, LocalTime.now().format(logTimeFormat))
         @Suppress("DEPRECATION")
         char.value = packet
         @Suppress("DEPRECATION")
@@ -193,14 +193,22 @@ class StandaloneGattClient(
                 status: Int,
                 newState: Int,
             ) {
+                if (gatt !== this@StandaloneGattClient.gatt) {
+                    gatt.close()
+                    return
+                }
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         if (status != BluetoothGatt.GATT_SUCCESS) {
                             Log.w(TAG, "GATT connected with error status: $status")
+                            failCurrentGatt(gatt)
                             return
                         }
                         Log.i(TAG, "GATT connected, discovering services")
-                        gatt.discoverServices()
+                        if (!gatt.discoverServices()) {
+                            failCurrentGatt(gatt)
+                            return
+                        }
                         // 超时保护：部分 BLE 固件可能永不回调 onServicesDiscovered
                         handler.postDelayed(
                             { handleDiscoveryTimeout(gatt) },
@@ -212,7 +220,11 @@ class StandaloneGattClient(
                         Log.i(TAG, "GATT disconnected")
                         _connectionState.value = ConnectionState.DISCONNECTED
                         handler.removeCallbacksAndMessages(null)
+                        statusPoller.cancel()
+                        writeChar = null
+                        this@StandaloneGattClient.gatt = null
                         gatt.close()
+                        clearPublishedState()
                     }
                 }
             }
@@ -221,17 +233,21 @@ class StandaloneGattClient(
                 gatt: BluetoothGatt,
                 status: Int,
             ) {
+                if (gatt !== this@StandaloneGattClient.gatt) {
+                    gatt.close()
+                    return
+                }
                 handler.removeCallbacksAndMessages(null)
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     Log.e(TAG, "Service discovery failed: $status")
-                    _connectionState.value = ConnectionState.DISCONNECTED
+                    failCurrentGatt(gatt)
                     return
                 }
 
                 val service = gatt.getService(gattSpec.serviceUuid)
                 if (service == null) {
                     Log.e(TAG, "Service not found")
-                    _connectionState.value = ConnectionState.DISCONNECTED
+                    failCurrentGatt(gatt)
                     return
                 }
                 writeChar = service.getCharacteristic(gattSpec.writeCharUuid)
@@ -239,7 +255,7 @@ class StandaloneGattClient(
 
                 if (writeChar == null || notifyChar == null) {
                     Log.e(TAG, "Characteristics not found")
-                    _connectionState.value = ConnectionState.DISCONNECTED
+                    failCurrentGatt(gatt)
                     return
                 }
 
@@ -247,20 +263,36 @@ class StandaloneGattClient(
                 writeChar?.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
 
                 // 启用通知
-                gatt.setCharacteristicNotification(notifyChar, true)
-                val descriptor = notifyChar.getDescriptor(gattSpec.cccdUuid)
-                if (descriptor != null) {
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
+                if (!gatt.setCharacteristicNotification(notifyChar, true)) {
+                    failCurrentGatt(gatt)
+                    return
                 }
+                val descriptor = notifyChar.getDescriptor(gattSpec.cccdUuid)
+                if (descriptor == null) {
+                    failCurrentGatt(gatt)
+                    return
+                }
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                if (!gatt.writeDescriptor(descriptor)) failCurrentGatt(gatt)
+            }
 
+            override fun onDescriptorWrite(
+                gatt: BluetoothGatt,
+                descriptor: BluetoothGattDescriptor,
+                status: Int,
+            ) {
+                if (gatt !== this@StandaloneGattClient.gatt || descriptor.uuid != gattSpec.cccdUuid) return
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    failCurrentGatt(gatt)
+                    return
+                }
                 _connectionState.value = ConnectionState.CONNECTED
                 Log.i(TAG, "GATT ready")
 
                 // 查询全部状态
                 handler.postDelayed(
                     { queryAllStatus() },
-                    profile.gattTiming?.initialStatusQueryDelayMs ?: 120L
+                    profile.gattTiming?.initialStatusQueryDelayMs ?: 120L,
                 )
 
                 // Verify profile via GATT service UUIDs
@@ -279,16 +311,40 @@ class StandaloneGattClient(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
+                if (gatt !== this@StandaloneGattClient.gatt) return
                 val data = characteristic.value ?: return
                 handleResponse(data)
             }
         }
 
     private fun handleDiscoveryTimeout(gatt: BluetoothGatt) {
+        if (gatt !== this.gatt) return
         Log.w(TAG, "Service discovery timed out, disconnecting")
-        gatt.disconnect()
+        failCurrentGatt(gatt)
+    }
+
+    private fun failCurrentGatt(gatt: BluetoothGatt) {
+        if (gatt !== this.gatt) return
+        handler.removeCallbacksAndMessages(null)
+        statusPoller.cancel()
+        writeChar = null
+        this.gatt = null
+        runCatching { gatt.disconnect() }
         gatt.close()
         _connectionState.value = ConnectionState.DISCONNECTED
+        clearPublishedState()
+    }
+
+    private fun clearPublishedState() {
+        _battery.value = null
+        _ancMode.value = null
+        _ancDepth.value = null
+        _transLevel.value = null
+        _eqMode.value = null
+        _gameMode.value = null
+        _lowLatency.value = null
+        _deviceName.value = null
+        _profileMatchResult.value = null
     }
 
     // ==================== 回包处理 ====================
@@ -296,12 +352,13 @@ class StandaloneGattClient(
     private fun handleResponse(data: ByteArray) {
         val hex = data.toHexString()
         val results = profile.protocol.parseResponse(data)
-        BleLog.log("App", "RX", hex, results.toString(), logTimeFormat.format(Date()))
+        BleLog.log("App", "RX", hex, results.toString(), LocalTime.now().format(logTimeFormat))
         for (result in results) {
             when (result) {
                 is DeviceResponse.Battery -> {
                     Log.d(TAG, "← $hex → $result")
                     _battery.value = result.info.withLastKnownCaseBattery(_battery.value)
+                    if (result.info.inChargingCase()) statusPoller.pause() else statusPoller.resume()
                 }
 
                 is DeviceResponse.Anc -> {

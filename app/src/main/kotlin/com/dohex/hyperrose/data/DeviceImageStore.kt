@@ -11,6 +11,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.dohex.hyperrose.model.DeviceColorProfile
 import com.dohex.hyperrose.model.DeviceColorTheme
 import com.dohex.hyperrose.model.EarphoneColor
+import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -90,7 +91,7 @@ class DeviceImageStore(context: Context) {
             HyperRoseAction.PACKAGE_APP,
         ).forEach { pkg ->
             runCatching {
-                appContext.sendBroadcast(
+                appContext.sendHyperRoseBroadcast(
                     Intent(HyperRoseAction.DEVICE_COLOR_CHANGED).apply {
                         putExtra(HyperRoseAction.EXTRA_DEVICE_ADDRESS, address)
                         putExtra(HyperRoseAction.EXTRA_COLOR, theme.color.name)
