@@ -68,10 +68,7 @@ object RoseCambrianResponseParser {
                     if (nonZero.size == 1 && values.size >= 3) {
                         results.add(
                             DeviceResponse.Battery(
-                                TwsBatteryState(
-                                    left = EarBatteryState(nonZero[0], false),
-                                    right = null, caseBattery = null,
-                                )
+                                TwsBatteryState(overall = nonZero[0]),
                             )
                         )
                     } else {
@@ -126,20 +123,9 @@ object RoseCambrianResponseParser {
         val subType = data[3].toInt() and 0xFF
         return when (subType) {
             0x0C -> {
-                val values = mutableListOf<Int>()
-                var vi = 4
-                while (vi < data.size - 1) {
-                    values.add(data[vi].toInt() and 0xFF)
-                    vi++
-                }
-                val nonZero = values.mapNotNull { it.asBatteryLevelOrNull() }.filter { it > 0 }
-                val level = if (nonZero.size == 1 && values.size >= 3) nonZero[0]
-                    else values.firstOrNull()?.asBatteryLevelOrNull() ?: return DeviceResponse.Unknown
+                val level = data[4].toInt() and 0xFF
                 DeviceResponse.Battery(
-                    TwsBatteryState(
-                        left = EarBatteryState(level, false),
-                        right = null, caseBattery = null,
-                    )
+                    TwsBatteryState(overall = level.asBatteryLevelOrNull() ?: return DeviceResponse.Unknown),
                 )
             }
             else -> DeviceResponse.Unknown
