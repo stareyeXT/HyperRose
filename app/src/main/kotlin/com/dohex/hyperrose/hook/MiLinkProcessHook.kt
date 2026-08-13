@@ -319,16 +319,26 @@ object MiLinkProcessHook {
                         }
 
                         HyperRoseAction.BATTERY_CHANGED -> {
-                            currentLeftBattery =
-                                intent.getIntExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, -1)
-                            currentRightBattery =
-                                intent.getIntExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, -1)
-                            currentCaseBattery =
-                                intent.getIntExtra(HyperRoseAction.EXTRA_CASE_LEVEL, -1)
-                            currentLeftCharging =
-                                intent.getBooleanExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, false)
-                            currentRightCharging =
-                                intent.getBooleanExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, false)
+                            val overallLevel =
+                                intent.getIntExtra(HyperRoseAction.EXTRA_OVERALL_LEVEL, -1)
+                            if (overallLevel in 0..100) {
+                                currentLeftBattery = overallLevel
+                                currentRightBattery = overallLevel
+                                currentCaseBattery = -1
+                                currentLeftCharging = false
+                                currentRightCharging = false
+                            } else {
+                                currentLeftBattery =
+                                    intent.getIntExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, -1)
+                                currentRightBattery =
+                                    intent.getIntExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, -1)
+                                currentCaseBattery =
+                                    intent.getIntExtra(HyperRoseAction.EXTRA_CASE_LEVEL, -1)
+                                currentLeftCharging =
+                                    intent.getBooleanExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, false)
+                                currentRightCharging =
+                                    intent.getBooleanExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, false)
+                            }
                         }
 
                         HyperRoseAction.ANC_CHANGED -> {
