@@ -73,6 +73,7 @@ object HyperRoseIpc {
     const val EXTRA_LEFT_CHARGING = "$EXTRA_PREFIX.left_charging"
     const val EXTRA_RIGHT_CHARGING = "$EXTRA_PREFIX.right_charging"
     const val EXTRA_CASE_LEVEL = "$EXTRA_PREFIX.case_level"
+    const val EXTRA_OVERALL_LEVEL = "$EXTRA_PREFIX.overall_level"
     const val EXTRA_LEFT_IMAGE = "$EXTRA_PREFIX.left_image"
     const val EXTRA_RIGHT_IMAGE = "$EXTRA_PREFIX.right_image"
     const val EXTRA_COLOR = "$EXTRA_PREFIX.color"
