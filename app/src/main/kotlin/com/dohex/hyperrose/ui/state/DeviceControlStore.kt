@@ -937,6 +937,9 @@ class DeviceControlStore(
         getStringExtra(key)?.let { runCatching { enumValueOf<T>(it) }.getOrNull() }
 
     private fun parseBattery(intent: Intent): TwsBatteryState? {
+        val overallLevel =
+            intent.getIntExtra(HyperRoseAction.EXTRA_OVERALL_LEVEL, -1).asBatteryLevelOrNull()
+        if (overallLevel != null) return TwsBatteryState(overall = overallLevel)
         val leftLevel =
             intent.getIntExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, -1).asBatteryLevelOrNull()
         val rightLevel =

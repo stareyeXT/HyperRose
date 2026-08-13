@@ -36,30 +36,40 @@ fun BatteryCard(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            BatteryCell(
-                iconRes = R.drawable.battery_left,
-                label = "左耳",
-                value = b?.left?.level,
-                charging = b?.left?.isCharging == true,
-                modifier = Modifier.weight(1f),
-            )
-            if (b?.right != null) {
-                BatteryCell(
-                    iconRes = R.drawable.battery_right,
-                    label = "右耳",
-                    value = b.right.level,
-                    charging = b.right.isCharging,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            if (b?.caseBattery != null) {
+            if (b?.overall != null) {
                 BatteryCell(
                     iconRes = R.drawable.battery_charge,
-                    label = "充电盒",
-                    value = b.caseBattery,
+                    label = "整机",
+                    value = b.overall,
                     charging = false,
                     modifier = Modifier.weight(1f),
                 )
+            } else {
+                BatteryCell(
+                    iconRes = R.drawable.battery_left,
+                    label = "左耳",
+                    value = b?.left?.level,
+                    charging = b?.left?.isCharging == true,
+                    modifier = Modifier.weight(1f),
+                )
+                if (b?.right != null) {
+                    BatteryCell(
+                        iconRes = R.drawable.battery_right,
+                        label = "右耳",
+                        value = b.right.level,
+                        charging = b.right.isCharging,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (b?.caseBattery != null) {
+                    BatteryCell(
+                        iconRes = R.drawable.battery_charge,
+                        label = "充电盒",
+                        value = b.caseBattery,
+                        charging = false,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
     }
