@@ -16,6 +16,7 @@ data class TwsBatteryState(
     val left: EarBatteryState? = null,
     val right: EarBatteryState? = null,
     val caseBattery: Int? = null,
+    val overall: Int? = null, // 整机单值（头戴/整机形态），0..100
 )
 
 fun Int.asBatteryLevelOrNull(): Int? = takeIf { it in MIN_BATTERY_LEVEL..MAX_BATTERY_LEVEL }
@@ -33,3 +34,11 @@ fun TwsBatteryState.inChargingCase(): Boolean {
     val known = listOfNotNull(left, right)
     return known.isNotEmpty() && known.all { it.isCharging }
 }
+
+/** 是否单值形态：整机单值，或组件形态仅 left 有值（无 right、无盒）。 */
+fun TwsBatteryState.isSingleValue(): Boolean =
+    overall != null || (right == null && caseBattery == null)
+
+/** 单值展示电量：整机单值优先；组件单耳形态返回 left 电量。 */
+fun TwsBatteryState.singleDisplayValue(): Int? =
+    overall ?: left?.level?.takeIf { right == null && caseBattery == null }
