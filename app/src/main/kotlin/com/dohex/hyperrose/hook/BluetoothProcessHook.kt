@@ -13,6 +13,8 @@ import com.dohex.hyperrose.model.AncDepth
 import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.EqPreset
 import com.dohex.hyperrose.model.TransparencyLevel
+import com.dohex.hyperrose.model.isSingleValue
+import com.dohex.hyperrose.model.singleDisplayValue
 import com.dohex.hyperrose.ipc.BroadcastSenderValidator
 import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.profile.DeviceProfileRegistry
@@ -314,7 +316,7 @@ object BluetoothProcessHook {
                                 val battery = s.currentBattery
                                 val device = s.connectedDevice
                                 if (battery != null && device != null) {
-                                    val isMono = battery.right == null && battery.caseBattery == null
+                                    val isMono = battery.isSingleValue()
                                     val resolvedColor = deviceColorMap[address]
                                     val leftImage = s.resolveImageName(s.profile.id, resolvedColor, isMono, true)
                                     val rightImage = if (isMono) null else s.resolveImageName(s.profile.id, resolvedColor, isMono, false)
@@ -324,7 +326,7 @@ object BluetoothProcessHook {
                                             addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                                             putExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, if (isMono) -1 else (battery.left?.level ?: -1))
                                             putExtra(HyperRoseAction.EXTRA_RIGHT_LEVEL, if (isMono) -1 else (battery.right?.level ?: -1))
-                                            putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.left?.level ?: -1) else (battery.caseBattery ?: -1))
+                                            putExtra(HyperRoseAction.EXTRA_CASE_LEVEL, if (isMono) (battery.singleDisplayValue() ?: -1) else (battery.caseBattery ?: -1))
                                             putExtra(HyperRoseAction.EXTRA_LEFT_CHARGING, battery.left?.isCharging ?: false)
                                             putExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, battery.right?.isCharging ?: false)
                                             putExtra(HyperRoseAction.EXTRA_DEVICE, device)
