@@ -40,6 +40,7 @@ object MiBluetoothFocusIslandHook {
     private var lastKnownCaseLevel: Int? = null
     private var lastKnownAncMode: AncMode? = null
     private var lastConnectedDevice: BluetoothDevice? = null
+    private var connectionSessionActive = false
     private var lastIslandLeft = -1
     private var lastIslandRight = -1
     private var lastIslandCase = -1
@@ -136,6 +137,13 @@ object MiBluetoothFocusIslandHook {
                     ) return
                     when (intent.action) {
                         HyperRoseAction.SHOW_ISLAND -> {
+                            val device =
+                                intent.getParcelableExtra(
+                                    HyperRoseAction.EXTRA_DEVICE,
+                                    BluetoothDevice::class.java,
+                                )
+                            beginConnectionSession(device)
+
                             val left =
                                 intent.getIntExtra(HyperRoseAction.EXTRA_LEFT_LEVEL, -1)
                                     .asBatteryLevelOrNull()
@@ -172,13 +180,6 @@ object MiBluetoothFocusIslandHook {
                             ) {
                                 return
                             }
-
-                            val device =
-                                intent.getParcelableExtra(
-                                    HyperRoseAction.EXTRA_DEVICE,
-                                    BluetoothDevice::class.java,
-                                )
-                            if (device != null) lastConnectedDevice = device
 
                             // 仅会话内首条 SHOW_ISLAND 展开大岛，之后只更新轻量焦点通知。
                             if (!firstIslandShown) {
@@ -261,36 +262,23 @@ object MiBluetoothFocusIslandHook {
                                 HyperRoseAction.EXTRA_DEVICE,
                                 BluetoothDevice::class.java,
                             )
-                            if (device != null) lastConnectedDevice = device
+                            val newSession = beginConnectionSession(device)
                             lastKnownAncMode = intent.getStringExtra(HyperRoseAction.EXTRA_MODE)
                                 ?.let { runCatching { AncMode.valueOf(it) }.getOrNull() }
-                            lastKnownCaseLevel = null
-                            lastIslandLeft = -1
-                            lastIslandRight = -1
-                            lastIslandCase = -1
-                            lastIslandLeftCharging = false
-                            lastIslandRightCharging = false
-                            lastLeftImageName = null
-                            lastRightImageName = null
-                            firstIslandShown = false
-                            showConnectionNotification(
-                                context = ctx,
-                                device = device,
-                            )
+                            if (newSession) {
+                                showConnectionNotification(
+                                    context = ctx,
+                                    device = device,
+                                )
+                            }
                         }
 
                         HyperRoseAction.DEVICE_DISCONNECTED -> {
                             lastKnownCaseLevel = null
-                            lastIslandLeft = -1
-                            lastIslandRight = -1
-                            lastIslandCase = -1
-                            lastIslandLeftCharging = false
-                            lastIslandRightCharging = false
-                            lastLeftImageName = null
-                            lastRightImageName = null
-                            firstIslandShown = false
+                            resetIslandDeliveryState()
                             lastKnownAncMode = null
                             lastConnectedDevice = null
+                            connectionSessionActive = false
                             cancelIsland(ctx)
                         }
 
@@ -534,6 +522,34 @@ object MiBluetoothFocusIslandHook {
         lastRightImageName = rightImageName
     }
 
+    private fun beginConnectionSession(device: BluetoothDevice?): Boolean {
+        val previousAddress = lastConnectedDevice?.address
+        val incomingAddress = device?.address
+        val newSession = startsNewIslandSession(
+            sessionActive = connectionSessionActive,
+            currentAddress = previousAddress,
+            incomingAddress = incomingAddress,
+        )
+        connectionSessionActive = true
+        if (device != null) lastConnectedDevice = device
+        if (newSession) {
+            lastKnownCaseLevel = null
+            resetIslandDeliveryState()
+        }
+        return newSession
+    }
+
+    private fun resetIslandDeliveryState() {
+        lastIslandLeft = -1
+        lastIslandRight = -1
+        lastIslandCase = -1
+        lastIslandLeftCharging = false
+        lastIslandRightCharging = false
+        lastLeftImageName = null
+        lastRightImageName = null
+        firstIslandShown = false
+    }
+
     private fun buildQuickControlPendingIntent(
         context: Context,
         device: BluetoothDevice?,
@@ -621,3 +637,13 @@ object MiBluetoothFocusIslandHook {
         runCatching { nm.cancel(ISLAND_NOTIFICATION_ID) }
     }
 }
+
+internal fun startsNewIslandSession(
+    sessionActive: Boolean,
+    currentAddress: String?,
+    incomingAddress: String?,
+): Boolean =
+    !sessionActive ||
+        (currentAddress != null &&
+            incomingAddress != null &&
+            !currentAddress.equals(incomingAddress, ignoreCase = true))

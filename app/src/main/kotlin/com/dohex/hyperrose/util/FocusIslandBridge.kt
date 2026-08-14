@@ -64,8 +64,8 @@ object FocusIslandBridge {
                 val picHeadset =
                     if (headsetIcon != null) createPicture("key_headset", headsetIcon) else picLeft
 
-                // 通知栏卡片可上浮为焦点岛；后续电量更新原地刷新，不再重复上浮。
-                enableFloat = true
+                // 首次投递展开大岛；后续投递只保留焦点通知、AOD 和操作按钮。
+                enableFloat = firstFloat
                 updatable = true
                 ticker = TICKER_TEXT
                 if (picHeadset != null) tickerPic = picHeadset
@@ -87,60 +87,62 @@ object FocusIslandBridge {
                     }
                 }
 
-                island {
-                    islandProperty = 1
-                    dismissIsland = false
-                    islandTimeout = islandTimeoutSeconds
-                    bigIslandArea {
-                        if (picLeft != null) {
-                            imageTextInfoLeft {
-                                type = 1
-                                picInfo {
+                if (firstFloat) {
+                    island {
+                        islandProperty = 1
+                        dismissIsland = false
+                        islandTimeout = islandTimeoutSeconds
+                        bigIslandArea {
+                            if (picLeft != null) {
+                                imageTextInfoLeft {
                                     type = 1
-                                    pic = picLeft
-                                }
-                                textInfo {
-                                    title = leftText
-                                    content = "%"
-                                }
-                            }
-                        } else {
-                            imageTextInfoLeft {
-                                type = 1
-                                textInfo {
-                                    title = leftText
-                                    content = "%"
-                                }
-                            }
-                        }
-                        if (rightText.isNotEmpty() || picRight != null) {
-                            if (picRight != null) {
-                                imageTextInfoRight {
-                                    type = 2
                                     picInfo {
                                         type = 1
-                                        pic = picRight
+                                        pic = picLeft
                                     }
                                     textInfo {
-                                        title = rightText
+                                        title = leftText
                                         content = "%"
                                     }
                                 }
                             } else {
-                                imageTextInfoRight {
-                                    type = 2
+                                imageTextInfoLeft {
+                                    type = 1
                                     textInfo {
-                                        title = rightText
+                                        title = leftText
                                         content = "%"
                                     }
                                 }
                             }
+                            if (rightText.isNotEmpty() || picRight != null) {
+                                if (picRight != null) {
+                                    imageTextInfoRight {
+                                        type = 2
+                                        picInfo {
+                                            type = 1
+                                            pic = picRight
+                                        }
+                                        textInfo {
+                                            title = rightText
+                                            content = "%"
+                                        }
+                                    }
+                                } else {
+                                    imageTextInfoRight {
+                                        type = 2
+                                        textInfo {
+                                            title = rightText
+                                            content = "%"
+                                        }
+                                    }
+                                }
+                            }
                         }
-                    }
-                    shareData {
-                        title = TICKER_TEXT
-                        content = baseContent
-                        shareContent = baseContent
+                        shareData {
+                            title = TICKER_TEXT
+                            content = baseContent
+                            shareContent = baseContent
+                        }
                     }
                 }
 
