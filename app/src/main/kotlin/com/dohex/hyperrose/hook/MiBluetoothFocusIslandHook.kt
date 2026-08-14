@@ -48,6 +48,7 @@ object MiBluetoothFocusIslandHook {
     private var lastIslandRightCharging = false
     private var lastLeftImageName: String? = null
     private var lastRightImageName: String? = null
+    private var lastCaseImageName: String? = null
 
     // 会话内首条 SHOW_ISLAND 才展示大岛；之后的更新只发轻量焦点通知，避免反复展开。
     private var firstIslandShown = false
@@ -176,7 +177,8 @@ object MiBluetoothFocusIslandHook {
                                 leftCharging == lastIslandLeftCharging &&
                                 rightCharging == lastIslandRightCharging &&
                                 leftImageName == lastLeftImageName &&
-                                rightImageName == lastRightImageName
+                                rightImageName == lastRightImageName &&
+                                caseImageName == lastCaseImageName
                             ) {
                                 return
                             }
@@ -218,6 +220,7 @@ object MiBluetoothFocusIslandHook {
                                         rightCharging,
                                         leftImageName,
                                         rightImageName,
+                                        caseImageName,
                                     )
                                 }
                             } else {
@@ -252,6 +255,7 @@ object MiBluetoothFocusIslandHook {
                                         rightCharging,
                                         leftImageName,
                                         rightImageName,
+                                        caseImageName,
                                     )
                                 }
                             }
@@ -283,8 +287,36 @@ object MiBluetoothFocusIslandHook {
                         }
 
                         HyperRoseAction.ANC_CHANGED -> {
-                            lastKnownAncMode = intent.getStringExtra(HyperRoseAction.EXTRA_MODE)
+                            val mode = intent.getStringExtra(HyperRoseAction.EXTRA_MODE)
                                 ?.let { runCatching { AncMode.valueOf(it) }.getOrNull() }
+                            if (mode != null) {
+                                lastKnownAncMode = mode
+                                if (firstIslandShown &&
+                                    (lastIslandLeft >= 0 || lastIslandRight >= 0 || lastIslandCase >= 0)
+                                ) {
+                                    runCatching {
+                                        showFocusNotification(
+                                            context = ctx,
+                                            device = lastConnectedDevice,
+                                            left = lastIslandLeft,
+                                            right = lastIslandRight,
+                                            caseLevel = lastIslandCase,
+                                            leftCharging = lastIslandLeftCharging,
+                                            rightCharging = lastIslandRightCharging,
+                                            leftIcon = resolveIcon(lastLeftImageName),
+                                            rightIcon = resolveIcon(lastRightImageName),
+                                            caseIcon = resolveIcon(lastCaseImageName),
+                                        )
+                                    }.onFailure {
+                                        module.log(
+                                            Log.WARN,
+                                            TAG,
+                                            "MiBluetoothFocusIslandHook: ANC notification refresh failed",
+                                            it,
+                                        )
+                                    }
+                                }
+                            }
                         }
 
                         Intent.ACTION_USER_PRESENT -> {
@@ -295,6 +327,7 @@ object MiBluetoothFocusIslandHook {
                             lastIslandRightCharging = false
                             lastLeftImageName = null
                             lastRightImageName = null
+                            lastCaseImageName = null
                         }
                     }
                 }
@@ -440,7 +473,7 @@ object MiBluetoothFocusIslandHook {
                 .setStyle(Notification.BigTextStyle().bigText(content))
                 .setOnlyAlertOnce(true)
                 .setOngoing(true)
-                .setContentIntent(buildQuickControlPendingIntent(context, device, left, right))
+                .setContentIntent(buildAppLaunchPendingIntent(context))
                 .addAction(ancAction)
         if (extras != null) builder.addExtras(extras)
 
@@ -466,8 +499,8 @@ object MiBluetoothFocusIslandHook {
         )
         val name = device?.name ?: "耳机"
         // 连接时弹窗由 OfficialFastConnectDialogHook 复用官方 MiuiFastConnectActivity 呈现，
-        // 这里仅保留一条可点击进入快捷控制浮窗的 heads-up 提示。
-        val popupIntent = buildQuickControlPendingIntent(context, device, -1, -1)
+        // 这里仅保留一条可点击进入 HyperRose 主界面的 heads-up 提示。
+        val popupIntent = buildAppLaunchPendingIntent(context)
         val notification = Notification.Builder(context, CONNECTION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setContentTitle("耳机已连接")
@@ -512,6 +545,7 @@ object MiBluetoothFocusIslandHook {
         rightCharging: Boolean,
         leftImageName: String?,
         rightImageName: String?,
+        caseImageName: String?,
     ) {
         lastIslandLeft = left
         lastIslandRight = right
@@ -520,6 +554,7 @@ object MiBluetoothFocusIslandHook {
         lastIslandRightCharging = rightCharging
         lastLeftImageName = leftImageName
         lastRightImageName = rightImageName
+        lastCaseImageName = caseImageName
     }
 
     private fun beginConnectionSession(device: BluetoothDevice?): Boolean {
@@ -547,28 +582,15 @@ object MiBluetoothFocusIslandHook {
         lastIslandRightCharging = false
         lastLeftImageName = null
         lastRightImageName = null
+        lastCaseImageName = null
         firstIslandShown = false
     }
 
-    private fun buildQuickControlPendingIntent(
-        context: Context,
-        device: BluetoothDevice?,
-        left: Int,
-        right: Int,
-    ): PendingIntent {
-        val caseLevel = lastKnownCaseLevel ?: -1
-        val intent =
-            QuickControlIntentFactory.createLaunchIntent(
-                deviceName = device?.name,
-                deviceAddress = device?.address,
-                leftLevel = left,
-                rightLevel = right,
-                caseLevel = caseLevel,
-                forceConnected = true,
-            )
+    private fun buildAppLaunchPendingIntent(context: Context): PendingIntent {
+        val intent = QuickControlIntentFactory.createAppLaunchIntent()
 
         // Android 15 / HyperOS 要求 PendingIntent 创建方显式允许后台启动，
-        // 否则从通知 / 岛下拉打开控制浮窗会被 BAL 拦截。
+        // 否则从通知打开应用会被 BAL 拦截。
         val activityOptions =
             ActivityOptions.makeBasic().apply {
                 setPendingIntentCreatorBackgroundActivityStartMode(

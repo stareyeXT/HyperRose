@@ -11,6 +11,11 @@ object QuickControlIntentFactory {
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP
 
+    fun createAppLaunchIntent(): Intent = Intent().apply {
+        setClassName(HyperRoseIpc.PACKAGE_APP, HyperRoseIpc.APP_ENTRY_ACTIVITY)
+        addFlags(LAUNCH_FLAGS)
+    }
+
     fun createLaunchIntent(
         deviceName: String?,
         deviceAddress: String? = null,
