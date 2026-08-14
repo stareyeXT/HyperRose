@@ -37,8 +37,56 @@ object BluetoothProcessHook {
 
     /** address → EarphoneColor.name 缓存 */
     private val deviceColorMap = mutableMapOf<String, String>()
+    private const val COLOR_PREFS = "hyperrose_device_colors"
+    private var appContext: Context? = null
+    private var colorMapLoaded = false
 
-    internal fun getDeviceColor(address: String?): String? = address?.let { deviceColorMap[it] }
+    internal fun getDeviceColor(address: String?): String? {
+        if (address == null) return null
+        if (!colorMapLoaded) loadColorMap()
+        return deviceColorMap[address]
+    }
+
+    /** 从本进程 SharedPreferences 恢复颜色映射（蓝牙进程重启后仍能拿到用户所选颜色）。 */
+    private fun loadColorMap() {
+        colorMapLoaded = true
+        val ctx = appContext ?: return
+        runCatching {
+            ctx.getSharedPreferences(COLOR_PREFS, Context.MODE_PRIVATE)
+                .all
+                .forEach { (key, value) -> if (value is String) deviceColorMap[key] = value }
+        }
+    }
+
+    private fun persistColor(context: Context, address: String, colorName: String) {
+        runCatching {
+            context.getSharedPreferences(COLOR_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(address, colorName)
+                .apply()
+        }
+    }
+
+    /**
+     * 发送 ANC 命令后乐观广播 ANC_CHANGED，让焦点通知的循环按钮文案即时更新，
+     * 不依赖耳机回包被解析（有些机型只回 ACK，不回状态）。
+     */
+    private fun broadcastAncChangedOptimistic(context: Context, mode: AncMode) {
+        listOf(
+            HyperRoseAction.PACKAGE_APP,
+            HyperRoseAction.PACKAGE_MILINK,
+            HyperRoseAction.PACKAGE_BLUETOOTH,
+            HyperRoseAction.PACKAGE_MI_BLUETOOTH,
+        ).forEach { pkg ->
+            context.sendHyperRoseBroadcast(
+                Intent(HyperRoseAction.ANC_CHANGED).apply {
+                    setPackage(pkg)
+                    addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                    putExtra(HyperRoseAction.EXTRA_MODE, mode.name)
+                },
+            )
+        }
+    }
 
     private var commandReceiverRegistered = false
     private val trustedCommandSenders =
@@ -46,6 +94,7 @@ object BluetoothProcessHook {
             HyperRoseAction.PACKAGE_APP,
             HyperRoseAction.PACKAGE_BLUETOOTH,
             HyperRoseAction.PACKAGE_MILINK,
+            HyperRoseAction.PACKAGE_MI_BLUETOOTH,
         )
 
     @SuppressLint("PrivateApi")
@@ -267,6 +316,10 @@ object BluetoothProcessHook {
         module: XposedModule,
         context: Context,
     ) {
+        if (appContext == null) {
+            appContext = context.applicationContext ?: context
+            loadColorMap()
+        }
         if (commandReceiverRegistered) return
 
         val filter =
@@ -285,8 +338,15 @@ object BluetoothProcessHook {
                     ctx: Context,
                     intent: Intent,
                 ) {
-                    if (!BroadcastSenderValidator.isAllowed(ctx.packageManager, sentFromUid, trustedCommandSenders)) {
+                    // 通知栏/岛的 PendingIntent 广播在 HyperOS 上以 uid=-1 派发，
+                    // 单独放行 ANC_SELECT（它只会来自通知按钮或 MiLink，非敏感操作）。
+                    val fromNotificationAncAction =
+                        intent.action == HyperRoseAction.ANC_SELECT && sentFromUid == -1
+                    if (!fromNotificationAncAction &&
+                        !BroadcastSenderValidator.isAllowed(ctx.packageManager, sentFromUid, trustedCommandSenders)
+                    ) {
                         module.log(Log.WARN, TAG, "Rejected command broadcast from uid=$sentFromUid")
+                        Log.w(TAG, "[HR] Rejected command broadcast uid=$sentFromUid action=${intent.action}")
                         return
                     }
                     // --- actions that don't require an active session ---
@@ -309,6 +369,7 @@ object BluetoothProcessHook {
                             val colorName = intent.getStringExtra(HyperRoseAction.EXTRA_COLOR)
                             if (address != null && colorName != null) {
                                 deviceColorMap[address] = colorName
+                                persistColor(ctx, address, colorName)
                             }
                             // 颜色变化 → 立即重发 SHOW_ISLAND，让岛更新耳机图
                             val s = session
@@ -320,6 +381,7 @@ object BluetoothProcessHook {
                                     val resolvedColor = deviceColorMap[address]
                                     val leftImage = s.resolveImageName(s.profile.id, resolvedColor, isMono, true)
                                     val rightImage = if (isMono) null else s.resolveImageName(s.profile.id, resolvedColor, isMono, false)
+                                    val caseImage = s.resolveCaseImageName(s.profile.id, resolvedColor)
                                     context.sendHyperRoseBroadcast(
                                         Intent(HyperRoseAction.SHOW_ISLAND).apply {
                                             setPackage(HyperRoseAction.PACKAGE_MI_BLUETOOTH)
@@ -334,6 +396,7 @@ object BluetoothProcessHook {
                                             putExtra(HyperRoseAction.EXTRA_COLOR, resolvedColor)
                                             putExtra(HyperRoseAction.EXTRA_LEFT_IMAGE, leftImage)
                                             putExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE, rightImage)
+                                            putExtra(HyperRoseAction.EXTRA_CASE_IMAGE, caseImage)
                                         },
                                     )
                                 }
@@ -349,6 +412,7 @@ object BluetoothProcessHook {
                             TAG,
                             "!!! CommandReceiver: session is NULL, dropping ${intent.action}"
                         )
+                        Log.w(TAG, "[HR] session NULL, dropping ${intent.action}")
                         return
                     }
                     if (!manager.isConnected) {
@@ -370,6 +434,7 @@ object BluetoothProcessHook {
                                     manager.profile.protocol.ancCommand(mode),
                                     "Set ANC: $mode"
                                 )
+                                broadcastAncChangedOptimistic(ctx, mode)
                             }
 
                             HyperRoseAction.SET_ANC_DEPTH -> {
@@ -450,6 +515,7 @@ object BluetoothProcessHook {
                             }
 
                             HyperRoseAction.ANC_SELECT -> {
+                                Log.w(TAG, "[HR] ANC_SELECT received mode=${intent.getStringExtra(HyperRoseAction.EXTRA_MODE)}")
                                 val modeName = intent.getStringExtra(HyperRoseAction.EXTRA_MODE)
                                 val mode =
                                     modeName?.let { runCatching { AncMode.valueOf(it) }.getOrNull() }
@@ -464,17 +530,20 @@ object BluetoothProcessHook {
                                         TAG,
                                         "!!! CommandReceiver: ANC_SELECT mode parse FAILED — modeName=$modeName"
                                     )
+                                    Log.w(TAG, "[HR] ANC_SELECT mode parse FAILED: $modeName")
                                     return
                                 }
                                 manager.sendCommand(
                                     manager.profile.protocol.ancCommand(mode),
                                     "Set ANC: $mode"
                                 )
+                                broadcastAncChangedOptimistic(ctx, mode)
                                 module.log(
                                     Log.DEBUG,
                                     TAG,
                                     "<<< CommandReceiver: ANC_SELECT command sent to earbuds: $mode"
                                 )
+                                Log.w(TAG, "[HR] ANC_SELECT sent to earbuds: $mode")
                             }
 
                             HyperRoseAction.REFRESH_STATUS -> {

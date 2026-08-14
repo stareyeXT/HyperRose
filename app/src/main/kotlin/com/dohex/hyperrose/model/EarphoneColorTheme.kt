@@ -152,6 +152,21 @@ enum class DeviceColorProfile(
         }
     }
 
+    /** 整机/充电盒图（通知栏头像、AOD 图）。 */
+    fun caseImageNameFor(color: EarphoneColor): String? {
+        val colorName = color.name.lowercase()
+        return when (deviceId) {
+            "rose-cambrian" -> when (colorName) {
+                "gray" -> "earphone_i5_gray_case"
+                "black" -> "earphone_mk2_black_case"
+                else -> "earphone_cambrian_blue"
+            }
+            "rose-earfree-i5" -> "earphone_i5_${colorName}_case"
+            "rose-budsfeel-mk2" -> "earphone_mk2_${colorName}_case"
+            else -> null
+        }
+    }
+
     companion object {
         val DEFAULT_PROFILE: DeviceColorProfile = EARFREE_I5
 

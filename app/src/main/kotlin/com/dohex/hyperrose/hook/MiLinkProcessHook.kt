@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
-import com.dohex.hyperrose.ipc.QuickControlIntentFactory
 import com.dohex.hyperrose.ipc.sendHyperRoseBroadcast
 import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.util.ReflectionHelper
@@ -55,6 +54,13 @@ object MiLinkProcessHook {
     private var currentRightCharging = false
     private var currentAncMode: AncMode? = null
 
+    // 融合设备中心运行时 owner 缓存 + 冷启动状态持久化（对齐 SonyPods）。
+    // 面板只“拉取”状态：广播到达后必须主动通知面板刷新，否则面板会一直显示空/旧值。
+    private const val STATE_PREFS = "hyperrose_milink_state"
+    private var lastAncBatteryController: Any? = null
+    private var lastProfileContext: Any? = null
+    private var stateSeeded = false
+
     /** LSPosed 日志（自动回退到 Log） */
     private fun mlog(level: Int, msg: String) {
         module?.log(level, LOG_TAG, msg) ?: Log.println(level, LOG_TAG, msg)
@@ -93,6 +99,26 @@ object MiLinkProcessHook {
      * 在系统首次调用时捕获 Context 并注册广播接收器。
      */
     private fun hookContextEntry(module: XposedModule, cl: ClassLoader) {
+        // The fusion center can query HeadsetInfo before MxBluetoothManager's
+        // getInstanceForIsMiTWS entry is called. Register early so the first
+        // panel render sees the current bridge state instead of an empty cache.
+        runCatching {
+            val applicationClass = cl.loadClass("android.app.Application")
+            val onCreate = applicationClass.getDeclaredMethod("onCreate")
+            module.hook(onCreate)?.intercept { chain ->
+                val result = chain.proceed()
+                val app = chain.thisObject as? Context
+                if (app != null && context == null) {
+                    context = app.applicationContext ?: app
+                    registerStateReceiver(module)
+                    module.log(Log.INFO, LOG_TAG, "State receiver registered from Application.onCreate")
+                }
+                result
+            }
+        }.onFailure {
+            module.log(Log.WARN, LOG_TAG, "Application.onCreate state hook skipped", it)
+        }
+
         MX_MANAGER_CLASSES.forEach { className ->
             runCatching {
                 val clazz = cl.loadClass(className)
@@ -203,14 +229,11 @@ object MiLinkProcessHook {
                     if (device == null || !isRoseEarphone(device)) {
                         return@intercept chain.proceed()
                     }
-
-                    val ctx = resolveContext(chain.thisObject) ?: return@intercept chain.proceed()
-                    val intent =
-                        QuickControlIntentFactory.createLaunchIntent(deviceName = device.name)
-                    runCatching { ctx.startActivity(intent) }
-
-                    module.log(Log.INFO, LOG_TAG, "switchToHeadsetActivity redirected to HyperRose")
-                    null // 阻止原始调用
+                    // Keep the system destination intact. Redirecting this method
+                    // unconditionally breaks Fusion Device Center page switching;
+                    // the notification and focus-island already provide the module
+                    // popup entry point.
+                    chain.proceed()
                 }
                 module.log(Log.INFO, LOG_TAG, "Hooked $className.switchToHeadsetActivity")
             }.onFailure {
@@ -281,6 +304,9 @@ object MiLinkProcessHook {
     private fun registerStateReceiver(module: XposedModule) {
         if (receiverRegistered) return
 
+        // 冷启动先恢复持久化的设备状态，避免面板在首条广播前渲染出空电量。
+        runCatching { loadState() }
+
         val filter = IntentFilter().apply {
             addAction(HyperRoseAction.DEVICE_CONNECTED)
             addAction(HyperRoseAction.DEVICE_DISCONNECTED)
@@ -305,6 +331,7 @@ object MiLinkProcessHook {
                                 intent.getParcelableExtra<BluetoothDevice>(HyperRoseAction.EXTRA_DEVICE)?.address
                             currentName =
                                 intent.getParcelableExtra<BluetoothDevice>(HyperRoseAction.EXTRA_DEVICE)?.name
+                            saveState()
                         }
 
                         HyperRoseAction.DEVICE_DISCONNECTED -> {
@@ -316,6 +343,8 @@ object MiLinkProcessHook {
                             currentLeftCharging = false
                             currentRightCharging = false
                             currentAncMode = null
+                            saveState()
+                            pushStateToPanel()
                         }
 
                         HyperRoseAction.BATTERY_CHANGED -> {
@@ -339,6 +368,8 @@ object MiLinkProcessHook {
                                 currentRightCharging =
                                     intent.getBooleanExtra(HyperRoseAction.EXTRA_RIGHT_CHARGING, false)
                             }
+                            saveState()
+                            pushStateToPanel()
                         }
 
                         HyperRoseAction.ANC_CHANGED -> {
@@ -346,6 +377,8 @@ object MiLinkProcessHook {
                                 intent.getStringExtra(HyperRoseAction.EXTRA_MODE)?.let { name ->
                                     runCatching { AncMode.valueOf(name) }.getOrNull()
                                 }
+                            saveState()
+                            pushStateToPanel()
                         }
                     }
                     module.log(
@@ -388,6 +421,7 @@ object MiLinkProcessHook {
             module.hook(method)?.intercept { chain ->
                 val device = chain.getArg(0) as? BluetoothDevice
                 if (device != null && isRoseEarphone(device)) {
+                    cacheRuntimeOwner(clazz.name, chain.thisObject)
                     module.log(Log.DEBUG, LOG_TAG, "${clazz.simpleName}.$methodName → ${result()}")
                     return@intercept result()
                 }
@@ -704,12 +738,63 @@ object MiLinkProcessHook {
         runCatching { ReflectionHelper.callMethod(listener, "invoke", device, updateType) }
     }
 
-    /** 从 Hook 实例获取 Context */
-    private fun resolveContext(obj: Any): Context? = runCatching {
-        ReflectionHelper.callMethod(obj, "getApplicationContext") as? Context
-    }.getOrNull() ?: runCatching {
-        ReflectionHelper.getField(obj, "mContext") as? Context
-    }.getOrNull()
+    // ==================== 状态持久化 + 面板主动刷新（对齐 SonyPods） ====================
+
+    /** 记录 AncBatteryController / ProfileContext 实例，供状态变更后主动刷新面板。 */
+    private fun cacheRuntimeOwner(className: String, owner: Any?) {
+        when {
+            className.contains("AncBatteryController") -> lastAncBatteryController = owner
+            className.contains("ProfileContext") -> lastProfileContext = owner
+        }
+    }
+
+    /**
+     * 融合设备中心面板只“拉取”状态：广播到达后必须主动通知运行时属性已变更，
+     * 否则面板会一直显示空值或旧值，直到用户重新进入。
+     */
+    private fun pushStateToPanel() {
+        val address = currentAddress ?: return
+        val device = runCatching {
+            android.bluetooth.BluetoothAdapter.getDefaultAdapter()?.getRemoteDevice(address)
+        }.getOrNull() ?: return
+        listOf(lastAncBatteryController, lastProfileContext)
+            .filterNotNull()
+            .distinctBy { it.javaClass.name }
+            .forEach { owner ->
+                notifyHeadsetPropertyChanged(owner, device, 4) // 电量
+                notifyHeadsetPropertyChanged(owner, device, 8) // ANC
+            }
+    }
+
+    private fun saveState() {
+        val prefs = context?.getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE) ?: return
+        prefs.edit()
+            .putString("address", currentAddress)
+            .putString("name", currentName)
+            .putInt("left_battery", currentLeftBattery)
+            .putInt("right_battery", currentRightBattery)
+            .putInt("case_battery", currentCaseBattery)
+            .putBoolean("left_charging", currentLeftCharging)
+            .putBoolean("right_charging", currentRightCharging)
+            .putString("anc", currentAncMode?.name)
+            .apply()
+    }
+
+    /** 冷启动种子：每个进程只读一次，避免跨进程 SharedPreferences 覆盖新鲜广播状态。 */
+    private fun loadState() {
+        if (stateSeeded) return
+        val prefs = context?.getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE) ?: return
+        stateSeeded = true
+        currentAddress = prefs.getString("address", currentAddress)
+        currentName = prefs.getString("name", currentName)
+        currentLeftBattery = prefs.getInt("left_battery", currentLeftBattery)
+        currentRightBattery = prefs.getInt("right_battery", currentRightBattery)
+        currentCaseBattery = prefs.getInt("case_battery", currentCaseBattery)
+        currentLeftCharging = prefs.getBoolean("left_charging", currentLeftCharging)
+        currentRightCharging = prefs.getBoolean("right_charging", currentRightCharging)
+        currentAncMode = prefs.getString("anc", null)?.let { runCatching { AncMode.valueOf(it) }.getOrNull() }
+        currentAddress?.let { knownAddresses.add(it.uppercase()) }
+    }
 
     // ==================== 反射方法查找 ====================
 

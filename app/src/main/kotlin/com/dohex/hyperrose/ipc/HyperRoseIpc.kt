@@ -76,6 +76,7 @@ object HyperRoseIpc {
     const val EXTRA_OVERALL_LEVEL = "$EXTRA_PREFIX.overall_level"
     const val EXTRA_LEFT_IMAGE = "$EXTRA_PREFIX.left_image"
     const val EXTRA_RIGHT_IMAGE = "$EXTRA_PREFIX.right_image"
+    const val EXTRA_CASE_IMAGE = "$EXTRA_PREFIX.case_image"
     const val EXTRA_COLOR = "$EXTRA_PREFIX.color"
     const val EXTRA_HEX = "$EXTRA_PREFIX.hex"
     const val EXTRA_LOG_SOURCE = "$EXTRA_PREFIX.log_source"

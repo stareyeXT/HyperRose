@@ -109,6 +109,7 @@ abstract class DeviceSession(
                             putExtra(HyperRoseAction.EXTRA_LEFT_IMAGE, leftImage)
                             val rightImage = if (isMono) null else resolveImageName(profile.id, colorName, isMono, leftSide = false)
                             putExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE, rightImage)
+                            putExtra(HyperRoseAction.EXTRA_CASE_IMAGE, resolveCaseImageName(profile.id, colorName))
                         },
                     )
                 }
@@ -173,6 +174,7 @@ abstract class DeviceSession(
             HyperRoseAction.PACKAGE_APP,
             HyperRoseAction.PACKAGE_MILINK,
             HyperRoseAction.PACKAGE_BLUETOOTH,
+            HyperRoseAction.PACKAGE_MI_BLUETOOTH,
         ).forEach { pkg ->
             context.sendHyperRoseBroadcast(
                 Intent(action).apply {
@@ -226,6 +228,7 @@ abstract class DeviceSession(
                 Intent(HyperRoseAction.DEVICE_CONNECTED).apply {
                     putExtra(HyperRoseAction.EXTRA_DEVICE, device)
                     putExtra(HyperRoseAction.EXTRA_PROFILE_ID, profile.id)
+                    putExtra(HyperRoseAction.EXTRA_COLOR, BluetoothProcessHook.getDeviceColor(connectedAddress))
                     currentAnc?.let { putExtra(HyperRoseAction.EXTRA_MODE, it.name) }
                     currentEq?.let { putExtra(HyperRoseAction.EXTRA_EQ_MODE, it.name) }
                     currentGameMode?.let { putExtra(HyperRoseAction.EXTRA_ENABLED, it) }
@@ -255,6 +258,14 @@ abstract class DeviceSession(
             runCatching { com.dohex.hyperrose.model.EarphoneColor.valueOf(name.uppercase()) }.getOrNull()
         } ?: profile.defaultColor()
         return profile.islandImageNameFor(parsedColor, leftSide)
+    }
+
+    internal fun resolveCaseImageName(profileId: String, colorName: String?): String? {
+        val profile = com.dohex.hyperrose.model.DeviceColorProfile.forDevice(profileId) ?: return null
+        val parsedColor = colorName?.let { name ->
+            runCatching { com.dohex.hyperrose.model.EarphoneColor.valueOf(name.uppercase()) }.getOrNull()
+        } ?: profile.defaultColor()
+        return profile.caseImageNameFor(parsedColor)
     }
 
     internal fun defaultColorFor(profileId: String): String =

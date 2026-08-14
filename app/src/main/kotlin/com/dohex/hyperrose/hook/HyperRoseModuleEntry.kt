@@ -33,6 +33,8 @@ class HyperRoseModuleEntry : XposedModule() {
                     MiBluetoothFocusIslandHook.init(this, param)
                     log(Log.INFO, TAG, "Initializing HeadsetServiceBinderHook in MiBluetooth")
                     HeadsetServiceBinderHook.init(this, param.defaultClassLoader)
+                    log(Log.INFO, TAG, "Initializing OfficialFastConnectDialogHook")
+                    OfficialFastConnectDialogHook.init(this, param.defaultClassLoader)
                 }
 
                 HyperRoseIpc.PACKAGE_MILINK -> {

@@ -1,6 +1,7 @@
 package com.dohex.hyperrose.hook
 
 import android.annotation.SuppressLint
+import android.app.ActivityOptions
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,6 +17,7 @@ import android.util.Log
 import com.dohex.hyperrose.hook.HyperRoseModuleEntry.Companion.TAG
 import com.dohex.hyperrose.ipc.QuickControlIntentFactory
 import com.dohex.hyperrose.ipc.BroadcastSenderValidator
+import com.dohex.hyperrose.model.AncMode
 import com.dohex.hyperrose.model.asBatteryLevelOrNull
 import com.dohex.hyperrose.util.FocusIslandBridge
 import com.dohex.hyperrose.util.ReflectionHelper
@@ -26,13 +28,18 @@ import com.dohex.hyperrose.ipc.HyperRoseIpc as HyperRoseAction
 /** 在 com.xiaomi.bluetooth 进程接收 SHOW_ISLAND 广播并发送超级岛。 对齐 HyperOriG 的“宿主发岛”策略。 */
 @SuppressLint("MissingPermission")
 object MiBluetoothFocusIslandHook {
-    private const val CHANNEL_ID = "hyperrose.focus"
+    // Bump the IDs because Android persists channel importance permanently;
+    // the previous release created the focus channel as IMPORTANCE_LOW.
+    private const val CHANNEL_ID = "hyperrose.focus.v2"
+    private const val CONNECTION_CHANNEL_ID = "hyperrose.connection.v2"
     private const val ISLAND_NOTIFICATION_ID = 10086
     private const val ISLAND_TIMEOUT_SECONDS = 30
     private const val QUICK_CONTROL_REQUEST_CODE = 10086
     private var receiverRegistered = false
     private var moduleContext: Context? = null
     private var lastKnownCaseLevel: Int? = null
+    private var lastKnownAncMode: AncMode? = null
+    private var lastConnectedDevice: BluetoothDevice? = null
     private var lastIslandLeft = -1
     private var lastIslandRight = -1
     private var lastIslandCase = -1
@@ -152,6 +159,7 @@ object MiBluetoothFocusIslandHook {
 
                             val leftImageName = intent.getStringExtra(HyperRoseAction.EXTRA_LEFT_IMAGE)
                             val rightImageName = intent.getStringExtra(HyperRoseAction.EXTRA_RIGHT_IMAGE)
+                            val caseImageName = intent.getStringExtra(HyperRoseAction.EXTRA_CASE_IMAGE)
 
                             // 仅在上一条通知实际投递成功后去重；失败时允许相同状态重试。
                             if (firstIslandShown &&
@@ -170,11 +178,13 @@ object MiBluetoothFocusIslandHook {
                                     HyperRoseAction.EXTRA_DEVICE,
                                     BluetoothDevice::class.java,
                                 )
+                            if (device != null) lastConnectedDevice = device
 
                             // 仅会话内首条 SHOW_ISLAND 展开大岛，之后只更新轻量焦点通知。
                             if (!firstIslandShown) {
                                 val leftIcon = resolveIcon(leftImageName)
                                 val rightIcon = resolveIcon(rightImageName)
+                                val caseIcon = resolveIcon(caseImageName)
                                 val shown = runCatching {
                                     showIsland(
                                         context = ctx,
@@ -186,6 +196,7 @@ object MiBluetoothFocusIslandHook {
                                         rightCharging = rightCharging,
                                         leftIcon = leftIcon,
                                         rightIcon = rightIcon,
+                                        caseIcon = caseIcon,
                                     )
                                 }.getOrElse {
                                     module.log(
@@ -218,6 +229,9 @@ object MiBluetoothFocusIslandHook {
                                         caseLevel = caseLevel,
                                         leftCharging = leftCharging,
                                         rightCharging = rightCharging,
+                                        leftIcon = resolveIcon(leftImageName),
+                                        rightIcon = resolveIcon(rightImageName),
+                                        caseIcon = resolveIcon(caseImageName),
                                     )
                                 }.getOrElse {
                                     module.log(
@@ -243,6 +257,13 @@ object MiBluetoothFocusIslandHook {
                         }
 
                         HyperRoseAction.DEVICE_CONNECTED -> {
+                            val device = intent.getParcelableExtra(
+                                HyperRoseAction.EXTRA_DEVICE,
+                                BluetoothDevice::class.java,
+                            )
+                            if (device != null) lastConnectedDevice = device
+                            lastKnownAncMode = intent.getStringExtra(HyperRoseAction.EXTRA_MODE)
+                                ?.let { runCatching { AncMode.valueOf(it) }.getOrNull() }
                             lastKnownCaseLevel = null
                             lastIslandLeft = -1
                             lastIslandRight = -1
@@ -252,6 +273,10 @@ object MiBluetoothFocusIslandHook {
                             lastLeftImageName = null
                             lastRightImageName = null
                             firstIslandShown = false
+                            showConnectionNotification(
+                                context = ctx,
+                                device = device,
+                            )
                         }
 
                         HyperRoseAction.DEVICE_DISCONNECTED -> {
@@ -264,7 +289,14 @@ object MiBluetoothFocusIslandHook {
                             lastLeftImageName = null
                             lastRightImageName = null
                             firstIslandShown = false
+                            lastKnownAncMode = null
+                            lastConnectedDevice = null
                             cancelIsland(ctx)
+                        }
+
+                        HyperRoseAction.ANC_CHANGED -> {
+                            lastKnownAncMode = intent.getStringExtra(HyperRoseAction.EXTRA_MODE)
+                                ?.let { runCatching { AncMode.valueOf(it) }.getOrNull() }
                         }
 
                         Intent.ACTION_USER_PRESENT -> {
@@ -288,6 +320,7 @@ object MiBluetoothFocusIslandHook {
                     .filter {
                         it == HyperRoseAction.DEVICE_CONNECTED || it == HyperRoseAction.DEVICE_DISCONNECTED
                     }.forEach(::addAction)
+                addAction(HyperRoseAction.ANC_CHANGED)
             }
         context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
         receiverRegistered = true
@@ -305,6 +338,67 @@ object MiBluetoothFocusIslandHook {
         rightCharging: Boolean,
         leftIcon: Icon?,
         rightIcon: Icon?,
+        caseIcon: Icon?,
+    ): Boolean =
+        postStatusNotification(
+            context = context,
+            device = device,
+            left = left,
+            right = right,
+            caseLevel = caseLevel,
+            leftCharging = leftCharging,
+            rightCharging = rightCharging,
+            leftIcon = leftIcon,
+            rightIcon = rightIcon,
+            caseIcon = caseIcon,
+            firstFloat = true,
+        )
+
+    /** 首条大岛之后的所有电量更新：原地刷新，不再重复上浮。 */
+    @SuppressLint("NotificationPermission")
+    private fun showFocusNotification(
+        context: Context,
+        device: BluetoothDevice?,
+        left: Int,
+        right: Int,
+        caseLevel: Int,
+        leftCharging: Boolean,
+        rightCharging: Boolean,
+        leftIcon: Icon?,
+        rightIcon: Icon?,
+        caseIcon: Icon?,
+    ): Boolean =
+        postStatusNotification(
+            context = context,
+            device = device,
+            left = left,
+            right = right,
+            caseLevel = caseLevel,
+            leftCharging = leftCharging,
+            rightCharging = rightCharging,
+            leftIcon = leftIcon,
+            rightIcon = rightIcon,
+            caseIcon = caseIcon,
+            firstFloat = false,
+        )
+
+    /**
+     * 统一的通知构建：通知栏卡片 + 超级岛 + AOD + 降噪循环按钮共用同一份
+     * focus payload。首次（firstFloat=true）展开大岛，后续原地更新。
+     */
+    @SuppressLint("NotificationPermission")
+    private fun postStatusNotification(
+        context: Context,
+        device: BluetoothDevice?,
+        left: Int,
+        right: Int,
+        caseLevel: Int,
+        leftCharging: Boolean,
+        rightCharging: Boolean,
+        leftIcon: Icon?,
+        rightIcon: Icon?,
+        caseIcon: Icon?,
+        firstFloat: Boolean,
     ): Boolean {
         val nm =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return false
@@ -317,6 +411,7 @@ object MiBluetoothFocusIslandHook {
                 rightCharging = rightCharging,
             )
 
+        val ancAction = buildAncCycleAction(context, device)
         val extras =
             FocusIslandBridge.buildBatteryIslandExtras(
                 leftLevel = left,
@@ -328,18 +423,25 @@ object MiBluetoothFocusIslandHook {
                 deviceName = device?.name ?: "耳机",
                 leftIcon = leftIcon,
                 rightIcon = rightIcon,
-            ) ?: return false
+                headsetIcon = caseIcon ?: leftIcon ?: rightIcon,
+                ancAction = ancAction,
+                ancLabel = ancAction.title?.toString(),
+                firstFloat = firstFloat,
+            )
 
-        val channel =
+        nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 "HyperRose 通知",
-                NotificationManager.IMPORTANCE_LOW,
+                NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "耳机状态通知"
                 setShowBadge(false)
-            }
-        nm.createNotificationChannel(channel)
+                setSound(null, null)
+                enableVibration(false)
+                setAllowBubbles(true)
+            },
+        )
 
         val builder =
             Notification
@@ -351,61 +453,42 @@ object MiBluetoothFocusIslandHook {
                 .setOnlyAlertOnce(true)
                 .setOngoing(true)
                 .setContentIntent(buildQuickControlPendingIntent(context, device, left, right))
-        builder.addExtras(extras)
+                .addAction(ancAction)
+        if (extras != null) builder.addExtras(extras)
 
         nm.notify(ISLAND_NOTIFICATION_ID, builder.build())
         return true
     }
 
-    /**
-     * 轻量焦点通知：复用同一通知 ID，仅更新标题/正文，不带大岛 extras。
-     * 首条 SHOW_ISLAND 展示大岛之后的所有更新走这里，避免反复展开动画。
-     */
     @SuppressLint("NotificationPermission")
-    private fun showFocusNotification(
+    private fun showConnectionNotification(
         context: Context,
         device: BluetoothDevice?,
-        left: Int,
-        right: Int,
-        caseLevel: Int,
-        leftCharging: Boolean,
-        rightCharging: Boolean,
-    ): Boolean {
-        val nm =
-            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return false
-        val content =
-            buildBatteryText(
-                left = left,
-                right = right,
-                caseLevel = caseLevel,
-                leftCharging = leftCharging,
-                rightCharging = rightCharging,
-            )
-
-        val channel =
+    ) {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        nm.createNotificationChannel(
             NotificationChannel(
-                CHANNEL_ID,
-                "HyperRose 通知",
-                NotificationManager.IMPORTANCE_LOW,
+                CONNECTION_CHANNEL_ID,
+                "HyperRose 连接提示",
+                NotificationManager.IMPORTANCE_HIGH,
             ).apply {
-                description = "耳机状态通知"
+                description = "耳机连接时显示快捷控制入口"
                 setShowBadge(false)
-            }
-        nm.createNotificationChannel(channel)
-
-        val builder =
-            Notification
-                .Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-                .setContentTitle(device?.name ?: "HyperRose")
-                .setContentText(content)
-                .setStyle(Notification.BigTextStyle().bigText(content))
-                .setOnlyAlertOnce(true)
-                .setOngoing(true)
-                .setContentIntent(buildQuickControlPendingIntent(context, device, left, right))
-
-        nm.notify(ISLAND_NOTIFICATION_ID, builder.build())
-        return true
+            },
+        )
+        val name = device?.name ?: "耳机"
+        // 连接时弹窗由 OfficialFastConnectDialogHook 复用官方 MiuiFastConnectActivity 呈现，
+        // 这里仅保留一条可点击进入快捷控制浮窗的 heads-up 提示。
+        val popupIntent = buildQuickControlPendingIntent(context, device, -1, -1)
+        val notification = Notification.Builder(context, CONNECTION_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentTitle("耳机已连接")
+            .setContentText(name)
+            .setAutoCancel(true)
+            .setTimeoutAfter(8_000L)
+            .setContentIntent(popupIntent)
+            .build()
+        nm.notify(ISLAND_NOTIFICATION_ID, notification)
     }
 
     private fun buildBatteryText(
@@ -468,12 +551,49 @@ object MiBluetoothFocusIslandHook {
                 forceConnected = true,
             )
 
+        // Android 15 / HyperOS 要求 PendingIntent 创建方显式允许后台启动，
+        // 否则从通知 / 岛下拉打开控制浮窗会被 BAL 拦截。
+        val activityOptions =
+            ActivityOptions.makeBasic().apply {
+                setPendingIntentCreatorBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS,
+                )
+            }
         return PendingIntent.getActivity(
             context,
             QUICK_CONTROL_REQUEST_CODE,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            activityOptions.toBundle(),
         )
+    }
+
+    private fun buildAncCycleAction(
+        context: Context,
+        device: BluetoothDevice?,
+    ): Notification.Action {
+        val nextMode = when (lastKnownAncMode) {
+            AncMode.NOISE_CANCEL -> AncMode.TRANSPARENT
+            AncMode.TRANSPARENT -> AncMode.NORMAL
+            AncMode.NORMAL, AncMode.WIND_NOISE, null -> AncMode.NOISE_CANCEL
+        }
+        val intent = Intent(HyperRoseAction.ANC_SELECT).apply {
+            setPackage(HyperRoseAction.PACKAGE_BLUETOOTH)
+            putExtra(HyperRoseAction.EXTRA_MODE, nextMode.name)
+            device?.address?.let { putExtra(HyperRoseAction.EXTRA_DEVICE_ADDRESS, it) }
+            addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            10087,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Action.Builder(
+            Icon.createWithResource(context, android.R.drawable.ic_menu_rotate),
+            "切换${nextMode.label}",
+            pendingIntent,
+        ).build()
     }
 
     private fun resolveIcon(drawableName: String?): Icon? {
